@@ -461,6 +461,12 @@
     end
 
 
+    -- box.shard.raise(code, message)
+    self.raise = function(code, message)
+        code = tonumber(code)
+        box.raise(code, message)
+    end
+
 
 end)(box)
 
