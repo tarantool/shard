@@ -31,6 +31,10 @@
 как только переопределяется `key` или `old_key`.
 * `daemon_off_period` - интервал задержки перед началом работы демона
 
-
+### box.shard.select(space, ...)
+### box.shard.update(space, ...)
+### box.shard.delete(space, ...)
+### box.shard.insert(space, ...)
+### box.shard.replace(space, ...)
 
 
