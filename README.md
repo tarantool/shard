@@ -185,7 +185,7 @@ box.shard.schema.config({параметр = значение})
 4. дожидается снятия блокировки на запись, если она заблокирована
 3. делает вставку `replace` на шарде `cur`
 
-### `box.shard.delete(space, key[, subkey, ...])
+### `box.shard.delete(space, key[, subkey, ...])`
 
 Удаляет запись
 
