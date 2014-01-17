@@ -1,4 +1,8 @@
 -- box.shard
+
+shard = require 'shard'
+
+--[[
 (function(box)
 
     local function errorf(fmt, ...)
@@ -470,3 +474,4 @@
 
 end)(box)
 
+]]

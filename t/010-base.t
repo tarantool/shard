@@ -68,6 +68,13 @@ diag $sh2->log unless
     ok $t2, 'Connector to shard2';
 ok $t2->ping, 'ping the second shard';
 
+is $t1->call_lua('shard.schema.is_valid' => [])->raw(0), 0,
+    'schema1 is not valid';
+is $t2->call_lua('shard.schema.is_valid' => [])->raw(0), 0,
+    'schema2 is not valid';
+
+
+__END__
 is $t1->call_lua('box.shard.schema:valid' => [],
     fields => [ { type => 'NUM' } ])->raw(0), 0,
         '!box.shard1.schema:valid()';
