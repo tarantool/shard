@@ -6,7 +6,7 @@ use utf8;
 use open qw(:std :utf8);
 use lib qw(lib ../lib);
 
-use Test::More tests    => 54;
+use Test::More tests    => 72;
 use Encode qw(decode encode);
 
 
@@ -23,6 +23,7 @@ BEGIN {
     use_ok 'Coro';
     use_ok 'Coro::AnyEvent';
     use_ok 'DR::Tarantool', 'coro_tarantool';
+    use_ok 'DR::Tarantool', ':constant';
 }
 
 use feature 'state';
@@ -32,23 +33,44 @@ my $cfg = rel2abs catfile dirname(dirname __FILE__), 'tarantool.cfg';
 ok -r $lua, "-r $lua";
 ok -r $cfg, "-r $cfg";
 
+
+sub config($@) {
+    my ($tnt, %opts) = @_;
+
+    my $str = join ",\n", map { "$_ = $opts{$_}" } keys %opts;
+
+    my $res = eval {
+        $tnt->call_lua('box.dostring' =>
+            [ "return box.shard.schema.config({ $str })" ]
+        );
+    };
+
+    diag $@ if $@;
+    return $res;
+}
+
+sub load_func($$$) {
+    my ($tnt, $where, $body) = @_;
+    config $tnt, $where => $body;
+}
+
 my $sh1 =
     run DR::Tarantool::StartTest(script_dir => dirname($lua), cfg => $cfg);
 
 diag $sh1->log unless
-ok $sh1->started, 'Shard1 is started';
+ok $sh1->started, 'Shard1 is started ' . $sh1->primary_port;
 
 my $sh2 =
     run DR::Tarantool::StartTest(script_dir => dirname($lua), cfg => $cfg);
 
 diag $sh2->log unless
-    ok $sh2->started, 'Shard1 is started';
+    ok $sh2->started, 'Shard1 is started ' . $sh2->primary_port;
 
 
 my $spaces = {
     0 => {
         name => 'test',
-        fields  => [ { type => 'NUM', name => 'id' }, qw(f1 f2) ],
+        fields  => [ { type => 'STR', name => 'id' }, qw(f1 f2) ],
         indexes => {
             0 => {
                 name => 'id',
@@ -68,365 +90,275 @@ diag $sh2->log unless
     ok $t2, 'Connector to shard2';
 ok $t2->ping, 'ping the second shard';
 
-is $t1->call_lua('shard.schema.is_valid' => [])->raw(0), 0,
-    'schema1 is not valid';
-is $t2->call_lua('shard.schema.is_valid' => [])->raw(0), 0,
-    'schema2 is not valid';
 
-
-__END__
-is $t1->call_lua('box.shard.schema:valid' => [],
-    fields => [ { type => 'NUM' } ])->raw(0), 0,
-        '!box.shard1.schema:valid()';
-is $t2->call_lua('box.shard.schema:valid' => [],
-    fields => [ { type => 'NUM' } ])->raw(0), 0,
-        '!box.shard2.schema:valid()';
-
+note '* sharding *';
 {
-    my $done = $t1->call_lua('box.dostring', [
-            qq/
-                return box.shard.schema.config({
-                    this = 1,
-                    list = {
-                        { '127.0.0.1', @{[ $sh1->primary_port ]}, },
-                        { '127.0.0.1', @{[ $sh2->primary_port ]}, },
-                    }
-                })
-            /,
-        ],
-        fields => [ { type => 'NUM' } ]
-    )->raw(0);
-    
-    is $done, 1, 'shard 1 is configured';
-}
 
-{
-    my $done = $t2->call_lua('box.dostring', [
-            qq/
-                return box.shard.schema.config({
-                    this = 2,
-                    list = {
-                        { '127.0.0.1', @{[ $sh1->primary_port ]}, },
-                        { '127.0.0.1', @{[ $sh2->primary_port ]}, },
-                    }
-                })
-            /,
-        ],
-        fields => [ { type => 'NUM' } ]
-    )->raw(0);
-    
-    is $done, 1, 'shard 1 is configured';
-}
+    is $t1->call_lua('box.shard.schema.is_valid' => [])->raw(0), 0,
+        'schema1 is not valid';
+    is $t2->call_lua('box.shard.schema.is_valid' => [])->raw(0), 0,
+        'schema2 is not valid';
 
-for my $c ($t1, $t2) {
-    state $no = 0;
-    my $done = $c->call_lua('box.dostring', [
-        qq/
-            local space = box.schema.create_space('test', {
-                id = 0,
-            })
+    load_func $t1, curr => q{
+        function(space, key)
+            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + math.fmod(string.byte(key, 1), 2)
+        end
+    };
+    load_func $t2, curr => q{
+        function(space, key)
+            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + math.fmod(string.byte(key, 1), 2)
+        end
+    };
 
-            space:create_index('primary', 'tree', {
-                parts = { 0, 'num' }
-            })
-
-            return '1'
-        /
-    ]);
-    $no++;
-    is $done->raw(0), 1, 'space[0] created, shard ' . $no;
-
-
-    for (1 .. 100) {
-        $c->insert(test => [ $_, rand, rand ])
-            if ($no % 2 xor $_ % 2);
-    }
-    
-    $done = $c->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ]);
-    is $done->raw(0), 50, '50 records were inserted at shard ' . $no;
-}
-for my $c ($t1, $t2) {
-    $c->call_lua('box.dostring', [
-        qq[
-            box.shard.schema.config({key = function(space, key)
-                if type(key) ~= 'number' then
-                    key = box.unpack('i', key)
-                end
-                if key % 2 == 1 then
-                    return 2
-                else
-                    return 1
-                end
-            end})
-        ]
-    ]);
-}
-
-note 'select';
-{
-    my (@r1, @r2);
-    for ( 1  .. 100 ) {
-        my $t = $t1->call_lua('box.dostring', [
-            qq/
-                return box.shard.select(
-                    'test',
-                    $_
-                )
-            /
-        ]);
-        push @r1 => $t if defined $t;
-        
-        $t = $t2->call_lua('box.dostring', [
-            qq/
-                return box.shard.select(
-                    'test',
-                    $_
-                )
-            /
-        ]);
-        push @r2 => $t if defined $t;
-    }
-    is scalar @r1, 100, '100 results from the first shard';
-    is scalar @r2, 100, '100 results from the second shard';
-}
-
-note 'insert';
-{
-    for (101 .. 190) {
-        $t1->call_lua('box.dostring', [
-                qq{
-                    return box.shard.insert('test', $_, '2', '3')
-                }
-            ]
-        );
-    }
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 95,
-            '95 records in the first shard';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 95,
-        '95 records in the second shard';
-}
-
-note 'update';
-{
-    for(1 .. 190) {
-        $t1->call_lua('box.dostring', [
-                qq{
-                    return box.shard.update('test', $_, '=p', 1, '15121974')
-                }
-            ]
-        );
-    }
-    my ($c1, $c2, $c3) = (0, 0, 0);
-    for (1 .. 190) {
-        if ( $_ % 2 ) {
-            $c2++ if $t2->select(test => [ $_ ])->raw(1) eq '15121974';
-        } else {
-            $c3++ if $t1->select(test => [ $_ ])->raw(1) eq '15121974';
-        }
-        $c1++ unless defined $t1->select(test => [ $_ ]);
-    }
-    is $c1, 95, '95 records are in the first shard';
-    is $c2, 95, '95 records were modified';
-    is $c3, 95, '95 records were modified';
-}
-
-note 'delete';
-{
-    for (11 .. 190) {
-        $t1->call_lua('box.dostring', [
-                qq{
-                    return box.shard.delete('test', $_)
-                }
-            ]
-        );
-    }
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 5,
-            '90 records were deleted in the first shard';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 5,
-        '90 records were deleted in the second shard';
-}
-
-for my $c ($t1, $t2) {
-    $c->call_lua('box.dostring', [
-        qq[
-            box.shard.schema.config({
-                old_key = box.shard.schema.key,
-                key     = function(space, ...) return 1 end
-            })
-        ]
-    ]);
-}
-
-note '================ resharding ===================';
-note 'move';
-{
-    my @res;
-    for (1 .. 10) {
-        push @res => $t2->call_lua('box.dostring', [
-            qq{ return box.shard.select('test', $_) }
-        ], 'test');
-    }
-    is scalar @res, 10, '10 records were fetched';
-    is scalar grep({ defined $_ } @res), 10, '10 records were fetched really';
-
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 10,
-            'All records were migrated to the first shard';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-            'All records were migrated to the first shard';
-   
-    @res = ();
-    for (1001 .. 1010) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.select( 'test', $_ ) }
-        ], 'test');
-    }
-    is_deeply \@res, [ map { undef } 1 .. 10 ], 'select absent records';
-}
-
-note 'delete';
-{
-    my @res;
-    for (1 .. 10) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.delete( 'test', $_ ) }
-        ], 'test');
-    }
-    is scalar @res, 10, '10 records were deleted';
-    is scalar grep({ defined $_ } @res), 10, '10 records were deleted really';
-    
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-            'All records were deleted';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-            'All records were deleted';
-
-    @res = ();
-    for (1 .. 10) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.delete( 'test', $_ ) }
-        ], 'test');
-    }
-    is_deeply \@res, [ map { undef } 1 .. 10 ], 'delete absent records';
-}
-
-note 'insert';
-{
-    my @res;
-    for (1 .. 10) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.insert( 'test', $_, 'cde' ) }
-        ], 'test');
-    }
-    is scalar @res, 10, '10 records were deleted';
-    is scalar grep({ defined $_ } @res), 10, '10 records were inserted really';
-    
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 10,
-            'All records were inserted into the first shard';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-            'No one records were inserted into the second shard';
-}
-
-
-note 'update';
-{
-    my @res;
-    for (1 .. 10) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.update( 'test', $_, '=p', 1, 'abcd' ) }
-        ], 'test');
-    }
-    is scalar @res, 10, '10 records were updated';
-    is scalar grep({ defined $_ and $_->f1 eq 'abcd' } @res), 10,
-        '10 records were updated really';
-    
-    for my $c ($t1, $t2) {
-        $c->call_lua('box.dostring', [
-            qq[
-                box.shard.schema.config({
-                    old_key = box.shard.schema.key,
-                    key     = function(space, ...) return 2 end
-                })
-            ]
-        ]);
-    }
-   
-    @res = ();
-    for (1 .. 10) {
-        my $c = ($_ % 2) ? $t1 : $t2;
-        push @res => $c->call_lua('box.dostring', [
-            qq{ return box.shard.update( 'test', $_, '=p', 1, 'abcde' ) }
-        ], 'test');
-    }
-    is scalar @res, 10, '10 records were updated';
-    is scalar grep({ defined $_ and $_->f1 eq 'abcde' } @res), 10,
-        '10 records were updated really';
-    
-    is $t1->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-            'All records were inserted into the second shard';
-    is $t2->call_lua('box.dostring',
-        [ 'return tostring(box.space[0]:len())' ])->raw(0), 10,
-            'No one records were migrated into the second shard';
-}
-
-{
-    for my $c ($t1, $t2) {
-        $c->call_lua('box.dostring', [
-            qq[
-                box.shard.schema.config({
-                    old_key             = box.shard.schema.key,
-                    key                 = function(space, ...) return 1 end,
-                    daemon              = true,
-                    daemon_off_period   = 0.5,
-                })
-            ]
-        ]);
-    }
-
-    my $started = AnyEvent::now;
-    for ( 1 .. 20 ) {
-        Coro::AnyEvent::sleep .1;
-
-        my $d = $t2->call_lua('box.dostring',
-            [ 'return type(box.shard.daemon)' ])->raw(0);
-        last if $d eq 'nil';
-
-    }
-
-    my $time = AnyEvent::now() - $started;
-
-    cmp_ok $time, '>=', .5, 'daemon was delayed to .5 seconds';
     diag $sh1->log unless
-        is $t1->call_lua('box.dostring',
-            [ 'return tostring(box.space[0]:len())' ])->raw(0), 10,
-                'All records were inserted into the second shard';
-
-
+    config $t1,
+        list => qq#
+            {
+                { { 'rw', 100, '127.0.0.1', @{[$sh1->primary_port]} }, },
+                { { 'rw', 100, '127.0.0.1', @{[$sh2->primary_port]} }, },
+            }
+        #,
+        me  => 2,
+        mode    => "'rw'",
+    ;
     diag $sh2->log unless
-        is $t2->call_lua('box.dostring',
-            [ 'return tostring(box.space[0]:len())' ])->raw(0), 0,
-                'No one records were migrated into the second shard';
-}
+    config $t2,
+        list => qq#
+            {
+                { { 'rw', 100, '127.0.0.1', @{[$sh1->primary_port]} }, },
+                { { 'rw', 100, '127.0.0.1', @{[$sh2->primary_port]} }, },
+            }
+        #,
+        me  => 2,
+        mode    => "'rw'",
+    ;
 
-END {
-# note '=========================================';
-# note $sh1->log;
-# note '=========================================';
-# note $sh2->log;
-# note '=========================================';
+    is $t1->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema1 is valid';
+    is $t2->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema2 is valid';
+
+    eval { $t1->call_lua('box.shard.insert', [ '0', 'b', 'c', 'd']) };
+    like $@, qr{Can't redirect}, "ttl";
+
+    config $t1, me => 1;
+
+    is_deeply $t1->call_lua('box.shard.insert', [ '0', 'b', 'c', 'd'])->raw,
+        ['b', 'c', 'd'],
+        'box.shard.insert(0, "b", "c", "d")';
+
+    is_deeply $t1->call_lua('box.shard.insert', [ '0', 'a', 'b', 'c'])->raw,
+        ['a', 'b', 'c'],
+        'box.shard.insert(0, "a", "b", "c")';
+
+
+    is_deeply $t1->select(test => ['b'])->raw, ['b', 'c', 'd'],
+        'first record is in the first shard';
+    is_deeply $t2->select(test => ['a'])->raw, ['a', 'b', 'c'],
+        'second record is in the second shard';
+
+
+    is_deeply
+        $t1->call_lua('box.shard.replace', [ '0', 'b', 'c', 'd', 'e'])->raw,
+        ['b', 'c', 'd', 'e'],
+        'box.shard.replace(0, "b", "c", "d", "e")';
+
+    is_deeply
+        $t1->call_lua('box.shard.replace', [ '0', 'a', 'b', 'c', 'd'])->raw,
+        ['a', 'b', 'c', 'd'],
+        'box.shard.replace(0, "a", "b", "c", "d")';
+
+
+    is_deeply $t1->select(test => ['b'])->raw, ['b', 'c', 'd', 'e'],
+        'first record is in the first shard';
+    is_deeply $t2->select(test => ['a'])->raw, ['a', 'b', 'c', 'd'],
+        'second record is in the second shard';
+
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
+        ['b', 'c', 'd', 'e'],
+        "box.shard.select'(0, 'b')";
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw,
+        ['a', 'b', 'c', 'd'],
+        "box.shard.select'(0, 'a')";
+
+    is_deeply $t1->call_lua('box.shard.delete', [ 0, 'b' ])->raw,
+        ['b', 'c', 'd', 'e'],
+        'box.shard.delete(0, "b")';
+    is_deeply $t1->call_lua('box.shard.delete', [ 0, 'b' ]), undef,
+        'box.shard.delete(0, "b") - repeat';
+
+
+    is_deeply $t1->call_lua('box.shard.delete', [ 0, 'a' ])->raw,
+        ['a', 'b', 'c', 'd'],
+        'box.shard.delete(0, "a")';
+    is_deeply $t1->call_lua('box.shard.delete', [ 0, 'a' ]), undef,
+        'box.shard.delete(0, "a") - repeat';
+
+
+
+    is_deeply $t1->call_lua('box.shard.insert', [ 0, 'a', 'b' ])->raw,
+        ['a', 'b'],
+        'box.shard.insert(a, b)';
+
+    is_deeply $t1->call_lua('box.shard.insert', [ 0, 'b', 'c' ])->raw,
+        ['b', 'c'],
+        'box.shard.insert(b, c)';
+
+
+    is_deeply $t1->call_lua('box.shard.update', [ 0, 'a', '=p', 1, 'c' ])->raw,
+        ['a', 'c'],
+        'box.shard.update(0, a, =p, 1, c)';
+
+    is_deeply $t1->call_lua('box.shard.update', [ 0, 'b', '=p', 1, 'd' ])->raw,
+        ['b', 'd'],
+        'box.shard.update(0, b, =p, 1, d)';
+
+    is_deeply $t1->select(test => ['b'])->raw, ['b', 'd'],
+        'first record is in the first shard';
+    is_deeply $t2->select(test => ['a'])->raw, ['a', 'c'],
+        'second record is in the second shard';
+
+    is_deeply $t2->call_lua('box.shard.delete', [ 0, 'a' ])->raw,
+        ['a',  'c'],
+        'cleanup shard';
+    is_deeply $t2->call_lua('box.shard.delete', [ 0, 'b' ])->raw,
+        ['b',  'd'],
+        'cleanup shard';
+
+    is
+        $t2->call_lua('box.dostring', [ 'return tostring(box.space[0]:len())'])
+            ->raw(0), 0, 'space 0 (shard2) is empty';
+    is
+        $t1->call_lua('box.dostring', [ 'return tostring(box.space[0]:len())'])
+            ->raw(0), 0, 'space 0 (shard1) is empty';
+}
+note '* resharding *';
+{
+    is_deeply $t1->insert(test => [ 'a', 'b' ], TNT_FLAG_RETURN)->raw,
+        ['a', 'b'],
+        'prev schema insert sh1';
+
+    is_deeply $t2->insert(test => [ 'b', 'c' ], TNT_FLAG_RETURN)->raw,
+        ['b', 'c'],
+        'prev schema insert sh1';
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ]), undef,
+        'no records in storage';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'a' ]), undef,
+        'no records in storage';
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'b' ]), undef,
+        'no records in storage';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'b' ]), undef,
+        'no records in storage';
+
+    load_func $t1, prev => q{
+        function(space, key)
+            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + 1 - math.fmod(string.byte(key, 1), 2)
+        end
+    };
+    load_func $t2, prev => q{
+        function(space, key)
+            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + 1 - math.fmod(string.byte(key, 1), 2)
+        end
+    };
+    is $t1->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema1 is valid';
+    is $t2->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema2 is valid';
+
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw, ['a', 'b'],
+        'record 1 by `prev` schema';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'b' ])->raw, ['b', 'c'],
+        'record 2 by `prev` schema';
+
+
+    note ' insert collision';
+    is eval {
+        $t1->call_lua('box.shard.insert', [0, 'a', 'c']);
+        1;
+    }, undef, 'insert error';
+    like $@, qr{Duplicate key exists}, 'error message';
+    is eval {
+        $t1->call_lua('box.shard.insert', [0, 'b', 'd']);
+        1;
+    }, undef, 'insert error';
+    like $@, qr{Duplicate key exists}, 'error message';
+  
+    note ' replace';
+    is_deeply
+        $t1->call_lua('box.shard.replace', [0, 'a', 'aa'])->raw,
+        [ 'a', 'aa' ],
+        'replace first record';
+    is_deeply
+        $t1->call_lua('box.shard.replace', [0, 'b', 'bb'])->raw,
+        [ 'b', 'bb' ],
+        'replace second record';
+
+
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw,
+        [ 'a', 'aa' ],
+        'select data from shards';
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
+        [ 'b', 'bb' ],
+        'select data from shards';
+    
+    is_deeply $t1->select(test => [ 'a' ])->raw,
+        ['a', 'b'],
+        'prev data is not changed (sh1)';
+
+    is_deeply $t2->select(test => [ 'b' ])->raw,
+        ['b', 'c'],
+        'prev data is not changed (sh2)';
+
+    $t2->delete(test => 'a');
+    $t1->delete(test => 'b');
+    
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw,
+        [ 'a', 'b' ],
+        'back to prev state';
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
+        [ 'b', 'c' ],
+        'back to prev state';
+
+
+    note ' update';
+
+    is_deeply
+        $t1->call_lua('box.shard.update', [ 0 => 'a', '=p', 1, 'aaa' ])->raw,
+        [ 'a', 'aaa' ],
+        'update the first record';
+
+    is_deeply
+        $t1->call_lua('box.shard.update', [ 0 => 'b', '=p', 1, 'bbb' ])->raw,
+        [ 'b', 'bbb' ],
+        'update the second record';
+    is_deeply $t1->select(test => [ 'a' ])->raw,
+        ['a', 'b'],
+        'prev data is not changed (sh1)';
+
+    is_deeply $t2->select(test => [ 'b' ])->raw,
+        ['b', 'c'],
+        'prev data is not changed (sh2)';
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw,
+        [ 'a', 'aaa' ],
+        'select the first record';
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
+        [ 'b', 'bbb' ],
+        'select the second record';
 }
