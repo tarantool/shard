@@ -420,7 +420,7 @@ box.shard =
                     errorf("Wrong mode: %s", mode)
                 end
                 local shardno = math.random(1, #list)
-                local tnt = connection(shardno, 'rw')
+                local tnt = connection(shardno, mode)
                 return box.net.self:call(proc_name, ...)
             end,
 

@@ -202,7 +202,11 @@ box.shard.schema.config({параметр = значение})
 1. если запись присутствует, то выполняет `return update( ... )`
 1. выполняет `insert( {selected} ); return update( ... )`
 
-### `box.shard.call(mode, procname, key, [subkey, … ] format, ... )`
+### `box.shard.call(mode, procname, ... )`
+
+1. выбирает случайный шард
+1. выбирает хост в пределах выбранного шарда, удовлетворяющий `mode`
+1. делает вызов указанной функции на выбранном хосте
 
 
 	
