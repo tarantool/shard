@@ -6,7 +6,7 @@ use utf8;
 use open qw(:std :utf8);
 use lib qw(lib ../lib);
 
-use Test::More tests    => 72;
+use Test::More tests    => 101;
 use Encode qw(decode encode);
 
 
@@ -101,13 +101,13 @@ note '* sharding *';
 
     load_func $t1, curr => q{
         function(space, key)
-            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
             return 1 + math.fmod(string.byte(key, 1), 2)
         end
     };
     load_func $t2, curr => q{
         function(space, key)
-            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
             return 1 + math.fmod(string.byte(key, 1), 2)
         end
     };
@@ -259,13 +259,13 @@ note '* resharding *';
 
     load_func $t1, prev => q{
         function(space, key)
-            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
             return 1 + 1 - math.fmod(string.byte(key, 1), 2)
         end
     };
     load_func $t2, prev => q{
         function(space, key)
-            print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
             return 1 + 1 - math.fmod(string.byte(key, 1), 2)
         end
     };
@@ -361,4 +361,144 @@ note '* resharding *';
         $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
         [ 'b', 'bbb' ],
         'select the second record';
+
+
+    note ' cleanup';
+
+    ok !eval { $t1->call_lua('box.shard.cleanup' => []); 1},
+        'cleanup while resharding';
+
+    config $t1, prev => 'false';
+    config $t2, prev => 'false';
+
+    is_deeply
+        $t1->call_lua('box.shard.cleanup' => [])->raw,
+        [ 0 => 1 ],
+        'cleanup process removed old tuple (shard1)';
+    
+    is_deeply
+        $t2->call_lua('box.shard.cleanup' => [])->raw,
+        [ 0 => 1 ],
+        'cleanup process removed old tuple (shard2)';
+    
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw,
+        [ 'a', 'aaa' ],
+        'select the first record';
+    is_deeply
+        $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw,
+        [ 'b', 'bbb' ],
+        'select the second record';
+
+    note ' copy';
+    is_deeply
+        $t1->call_lua('box.shard.delete', [ 0, 'a' ])->raw,
+        [ 'a', 'aaa' ],
+        'select the first record';
+    is_deeply
+        $t1->call_lua('box.shard.delete', [ 0, 'b' ])->raw,
+        [ 'b', 'bbb' ],
+        'select the second record';
+    
+    
+    is_deeply $t1->insert(test => [ 'a', 'b' ], TNT_FLAG_RETURN)->raw,
+        ['a', 'b'],
+        'prev schema insert sh1';
+
+    is_deeply $t2->insert(test => [ 'b', 'c' ], TNT_FLAG_RETURN)->raw,
+        ['b', 'c'],
+        'prev schema insert sh1';
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ]), undef,
+        'no records in storage';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'a' ]), undef,
+        'no records in storage';
+    load_func $t1, prev => q{
+        function(space, key)
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + 1 - math.fmod(string.byte(key, 1), 2)
+        end
+    };
+    load_func $t2, prev => q{
+        function(space, key)
+            -- print('curr(' .. tostring(box.tuple.new({ space, key })) .. ')')
+            return 1 + 1 - math.fmod(string.byte(key, 1), 2)
+        end
+    };
+    is $t1->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema1 is valid';
+    is $t2->call_lua('box.shard.schema.is_valid' => [])->raw(0), 1,
+        'schema2 is valid';
+
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw, ['a', 'b'],
+        'record 1 by `prev` schema';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'b' ])->raw, ['b', 'c'],
+        'record 2 by `prev` schema';
+
+    is_deeply
+        $t1->call_lua('box.shard.copy' => [])->raw,
+        [ 0 => 1 ],
+        'copy the first record';
+    is_deeply
+        $t2->call_lua('box.shard.copy' => [])->raw,
+        [ 0 => 1 ],
+        'copy the second record';
+    
+    is_deeply
+        $t1->call_lua('box.shard.copy' => [])->raw,
+        [ 0 => 0 ],
+        'no copy records - repeat';
+    is_deeply
+        $t2->call_lua('box.shard.copy' => [])->raw,
+        [ 0 => 0 ],
+        'no copy records - repeat';
+    
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'a' ])->raw, ['a', 'b'],
+        'record 1 by `prev` schema';
+
+    is_deeply $t2->call_lua('box.shard.select', [ 0, 'b' ])->raw, ['b', 'c'],
+        'record 2 by `prev` schema';
+    
+    config $t1, prev => 'false';
+    config $t2, prev => 'false';
+    
+    is_deeply
+        $t1->call_lua('box.shard.cleanup' => [])->raw,
+        [ 0 => 1 ],
+        'cleanup process removed old tuple (shard1)';
+    
+    is_deeply
+        $t2->call_lua('box.shard.cleanup' => [])->raw,
+        [ 0 => 1 ],
+        'cleanup process removed old tuple (shard2)';
+    
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'a' ])->raw, ['a', 'b'],
+        'record 1 by `prev` schema';
+
+    is_deeply $t1->call_lua('box.shard.select', [ 0, 'b' ])->raw, ['b', 'c'],
+        'record 2 by `prev` schema';
+
+
+    is_deeply $t1->select(test => [ 'a' ]),
+        undef,
+        'data migrated to shard2';
+
+    is_deeply $t2->select(test => [ 'b' ]),
+        undef,
+        'data migrated to shard1';
+    
+    is_deeply $t2->select(test => [ 'a' ])->raw,
+        ['a', 'b'],
+        'data really migrated to shard2';
+
+    is_deeply $t1->select(test => [ 'b' ])->raw,
+        ['b', 'c'],
+        'data really migrated to shard1';
+
 }
+
+
+# note $sh1->log;

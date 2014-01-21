@@ -15,6 +15,8 @@ box.shard =
     local numbers = false
     local lock = {}
 
+    internal_spaces = {}
+
     -- connections
     local c = {}
     local cw = {}
@@ -89,6 +91,38 @@ box.shard =
         end
         return key
     end
+
+
+    local function cleanup_space(space)
+        local count = 0
+        while true do
+            local to_rm = {}
+            for tuple in box.space[space].index[0]:iterator(box.index.ALL) do
+                local key = extract_key(space, tuple:unpack())
+                local shardno = curr(space, unpack(key))
+                if shardno ~= me then
+                    table.insert(to_rm, key)
+                    if #to_rm > 1000 then
+                        break
+                    end
+                end
+            end
+            if #to_rm == 0 then
+                break
+            end
+            for i, key in pairs(to_rm) do
+                box.delete(space, unpack(key))
+                count = count + 1    
+            end
+        end
+
+        if numbers then
+            return box.tuple.new({space, count})
+        else
+            return box.tuple.new({tostring(space), tostring(count)})
+        end
+    end
+
 
     -- unpack number
     local function unpack_number(no)
@@ -199,6 +233,38 @@ box.shard =
         end
         return tnt
     end
+    
+    local function copy_space(space)
+        local count = 0
+        while true do
+            local done = 0
+            for tuple in box.space[space].index[0]:iterator(box.index.ALL) do
+                local key = extract_key(space, tuple:unpack())
+                local pshardno = prev(space, unpack(key))
+                local shardno = curr(space, unpack(key))
+                if pshardno == me and shardno ~= me then
+                    local tnt = connection(shardno, 'rw')
+                    local stuple =
+                        tnt:call('box.shard.internal.copy_tuple',
+                            tostring(space),
+                            tuple:unpack())
+                    if stuple ~= nil then
+                        done = done + 1
+                        count = count + 1
+                    end
+                end
+            end
+
+            if done == 0 then
+                break
+            end
+        end
+        if numbers then
+            return box.tuple.new({ space, count })
+        else
+            return box.tuple.new({ tostring(space), tostring(count) })
+        end
+    end
 
     local self
 
@@ -278,6 +344,18 @@ box.shard =
                     mode = cfg.mode
                 end
 
+                if cfg.internal_spaces ~= nil then
+                    if type(cfg.internal_spaces) ~= 'table' then
+                        errorf("wrong 'internal_spaces' option: %s",
+                            type(cfg.internal_spaces))
+                    end
+
+                    internal_spaces = {}
+                    for i, v in pairs(cfg.internal_spaces) do
+                        internal_spaces[ i ] = true
+                    end
+                end
+
                 if numbers then
                     return 1
                 else
@@ -295,6 +373,26 @@ box.shard =
         },
 
         internal = {
+
+            -- copy tuple
+            copy_tuple = function (space, ...)
+                space = tonumber(space)
+                local key = extract_key(space, ...)
+                local exists = box.select(space, 0, unpack(key))
+                if exists then
+                    return
+                end
+                local shardno = curr(space, unpack(key))
+                if shardno ~= me then
+                    errorf("Can't copy tuple: curr points the other shard: %d",
+                        shardno)
+                end
+                if mode ~= 'rw' then
+                    errorf("Can't copy tuple: shard %d isn't in 'rw' mode",
+                        me)
+                end
+                return box.insert(space, ...)
+            end,
 
             -- shard.replace(space, ...)
             replace = function(ttl, space, ...)
@@ -327,7 +425,6 @@ box.shard =
             insert = function(ttl, space, ...)
                 ttl = tonumber(ttl)
                 space = unpack_number(space)
-                printf("box.shard.insert(%s, ...)", space)
                 local key = extract_key(space, ...)
                 local shardno = curr_valid(space, unpack(key))
 
@@ -339,7 +436,6 @@ box.shard =
                         )
                     end
                     local tnt = connection(shardno, 'rw')
-                    printf("redirect insert to shard %d", shardno)
                     ttl = tostring(ttl - 1)
                     if not numbers then
                         space = tostring(space)
@@ -569,6 +665,40 @@ box.shard =
         update = function(space, ...)
             return box.shard.internal.update(1, space, ...)
         end,
+
+        -- box.shard.cleanup()
+        cleanup = function()
+            if mode ~= 'rw' then
+                return
+            end
+            if prev ~= nil then
+                errorf("Reshading isn't done yet")
+            end
+            result = {}
+            for sno, space in pairs(box.space) do
+                if not internal_spaces[ sno ] then
+                    table.insert(result, cleanup_space(sno))
+                end
+            end
+            return unpack(result)
+        end,
+
+        -- box.shard.copy()
+        copy = function()
+            if mode ~= 'rw' then
+                return
+            end
+            if prev == nil then
+                errorf("Resharding mode is already done")
+            end
+            result = {}
+            for sno, space in pairs(box.space) do
+                if not internal_spaces[ sno ] then
+                    table.insert(result, copy_space(sno))
+                end
+            end
+            return unpack(result)
+        end
 
     }
 
