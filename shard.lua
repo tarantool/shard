@@ -4,10 +4,30 @@ if box.shard ~= nil then
     return box.shard
 end
 
+local ffi = require("ffi")
+ffi.cdef[[
+struct __timeval {
+    uint64_t      tv_sec;
+    uint64_t      tv_usec;
+};
+uint64_t time(uint64_t *t);
+int gettimeofday(struct __timeval *tv, struct timezone *tz);
+]]
+timeval = ffi.typeof("struct __timeval");
+
+local hitime = function()
+    local tv = timeval();
+    ffi.C.gettimeofday(tv,nil);
+    return tonumber(tv.tv_sec) + tonumber(tv.tv_usec)/1e6;
+end
+
 box.shard =
 (function()
+    local debug = true
     local list = {}
     local me = 0
+    local nodeno = -1
+    local remote_timeout = 0.001
     local curr  = function(space, key)
         error("function 'curr' is not defined")
     end
@@ -157,7 +177,7 @@ box.shard =
                 end
             )
 
-            if #sh > 1 and sh[1][1] == 'rw' then
+            if #sh > 1 and sh[1][2] == 'rw' then
                 error("Only one shard host can have 'rw' mode")
             end
         end
@@ -178,9 +198,91 @@ box.shard =
             a = nb
         end
     end
+    --[[
+        c[shard]:
+            all: [ ... ]
+            rw: [ ... ]
+    ]]--
+    local connections
+    local connected = {}
+    local function connect_all()
+        if connections ~= nil then
+            error("TODO: cancel fibers")
+        end
+        connections = {}
+        local i,j,shl,sh
+        for i, shl in pairs(list) do
+            connected[i] = { rw = nil; all = {} }
+            for j, sh in pairs(shl) do
+                (function (shno, nno, shcf)
+                    local isrw = shcf[1] == 'rw'
+                    local ckey = shcf[3] .. ':' .. shcf[4]
+                    printf("connecting for %s",ckey)
+                    local shtp = i..'/'..shcf[1]
+                    if shno == me and nno == nodeno then
+                        printf("skip %d/%d", me,nodeno)
+                        return
+                    end
+                    local con = box.net.box.new(shcf[3], shcf[4], remote_timeout)
+                    -- TODO: connect+ping behaves wrong
+                    local fib = box.fiber.create(function()
+                        box.fiber.name("shard.conn."..ckey);
+                        box.fiber.detach()
+                        while true do
+                            -- printf("ping %s:%s...", con.host, con.port)
+                            local time1 = hitime();
+                            local r,e = pcall(function()
+                                -- return con:timeout(remote_timeout):ping()
+                                return con:ping()
+                            end)
+                            time1 = hitime()-time1
+                            --printf("pong %s:%s -> %s %s %f", con.host, con.port, r,e, time1)
+                            if r and e then
+                                -- connection good
+                                if not connections[ckey]['status'] then
+                                    if debug then printf("connection to %s=%s became ok: %s / %f",ckey, shtp, e, time1) end
+                                    if isrw then
+                                        connected[ shno ]['rw'] = con
+                                    end
+                                    table.insert(connected[ shno ]['all'],con)
+                                    connections[ckey]['status'] = true
+                                end
+                                box.fiber.sleep(1)
+                            else
+                                -- connection bad
+                                if not r then printf("connection to %s=%s failed: %s / %f",ckey,shtp,e, time1) end
+                                if connections[ckey]['status'] then
+                                    if debug then printf("connection to %s=%s became bad: %s / %f",ckey, shtp, e, time1) end
+                                    if isrw then
+                                        connected[ shno ]['rw'] = nil
+                                    end
+                                    for k,v in pairs(connected[ shno ]['all']) do
+                                        if con == v then
+                                            print("removing ",k," from all")
+                                            table.remove(connected[ shno ]['all'], k )
+                                            break;
+                                        else
+                                            print("skip ",k," in all")
+                                        end
+                                    end
+                                    connections[ckey]['status'] = false
+                                end
+                                box.fiber.sleep(0.01)
+                            end
+                        end
+                    end)
+                    connections[ckey] = {
+                        c = con,
+                        f = fib
+                    }
+                    box.fiber.resume(fib)
+                end)(i,j,sh)
+            end
+        end
+    end
 
     -- connect to all shards
-    local function connect_all()
+    local function connect_all_1()
         c, cw = {}, {}
         for i, shl in pairs(list) do
             c[i] = {}
@@ -204,7 +306,7 @@ box.shard =
             if div == nil then
                 div = 1
             end
-
+            --[[
             for j, sh in pairs(shl) do
                 if sh[2] > 0 then
                     for k = 1, sh[2] / div do
@@ -212,6 +314,7 @@ box.shard =
                     end
                 end
             end
+            ]]--
         end
     end
 
@@ -222,16 +325,18 @@ box.shard =
         end
         if mode == 'rw' then
             if list[shardno][1][1] == 'rw' then
-                return c[shardno][1]
+                if connected[shardno]['rw'] then
+                    return connected[shardno]['rw']
+                end
+                errorf("Not conneted to rw node for shard %d", shardno)
             end
             errorf("There is no shard configured as 'rw' for shard %d", shardno)
         end
-
-        local tnt = c[shardno][ math.random(1, #cw[shardno]) ]
-        if tnt == nil then
-            errorf("Can't find connection for shard %d (%s)", shardno, mode)
+        
+        if #connected[shardno]['all'] > 0 then
+            return connected[shardno]['all'][ math.random(1, #connected[shardno]['all']) ]
         end
-        return tnt
+        errorf("Not conneted to any node for shard %d", shardno)
     end
     
     local function copy_space(space)
@@ -362,6 +467,24 @@ box.shard =
                     return '1'
                 end
             end,
+            
+            autome = function()
+                if #list == 0 then error("list must be configured") end
+                local ip = box.cfg.bind_ipaddr;
+                me = 0
+                for k,v in pairs(list) do
+                    for j,sh in pairs(v) do
+                        if ip == sh[3] and box.cfg.primary_port == sh[4] then
+                            print("autome: ", k, ": ", table.concat(sh, ", "))
+                            me = k
+                            nodeno = j
+                            mode = sh[1]
+                            return
+                        end
+                    end
+                end
+                print("i am (",ip,":",box.cfg.primary_port, ") have no shardno");
+            end,
 
             -- shard.schema.is_valid()
             is_valid = function()
@@ -423,16 +546,18 @@ box.shard =
 
             -- shard.insert(space, ...)
             insert = function(ttl, space, ...)
+                if (debug) then print(".internal.insert(",table.concat({ttl,space,...},","),")") end
                 ttl = tonumber(ttl)
                 space = unpack_number(space)
                 local key = extract_key(space, ...)
                 local shardno = curr_valid(space, unpack(key))
+                if (debug) then print(".internal.insert fwd to ",shardno) end
 
                 if shardno ~= me or mode ~= 'rw' then
                     if ttl <= 0 then
                         errorf(
-                            "Can't redirect request to shard %d (ttl=0)",
-                            shardno
+                            "Can't redirect request to shard %d:%s from %d:%s (ttl=0)",
+                            shardno, "rw", me, mode
                         )
                     end
                     local tnt = connection(shardno, 'rw')
@@ -600,6 +725,7 @@ box.shard =
 
         -- box.shard.insert(space, ...)
         insert = function(space, ...)
+            if (debug) then print(".insert(",table.concat({space,...},","),")") end
             return box.shard.internal.insert(1, space, ...)
         end,
 
