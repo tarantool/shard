@@ -23,19 +23,34 @@ end
 
 box.shard =
 (function()
-    local debug = true
+    -- throw formatted error message
+    local function errorf(msg, ...)
+        error(debug.traceback(string.format(msg, ...),2))
+    end
+
+    -- print formatted message
+    local function printf(msg, ...)
+        print(string.format(msg, ...))
+    end
+    
+    local _id = box.uuid_hex()
+    printf("Configuring shard with id = %s",_id)
+    
+    local debugging = true
     local list = {}
     local me = 0
     local nodeno = -1
-    local remote_timeout = 0.001
+    local remote_timeout = 0.05
     local curr  = function(space, key)
         error("function 'curr' is not defined")
     end
     local prev
     local numbers = false
     local lock = {}
+    
+    local callbacks = {}
 
-    internal_spaces = {}
+    local internal_spaces = {}
 
     -- connections
     local c = {}
@@ -51,16 +66,6 @@ box.shard =
         if numbers then return 0 else return '0' end
     end
 
-    -- throw formatted error message
-    local function errorf(msg, ...)
-        local str = string.format(msg, ...)
-        error(str)
-    end
-
-    -- print formatted message
-    local function printf(msg, ...)
-        print(string.format(msg, ...))
-    end
 
 
     -- return true if shard no is valid
@@ -211,66 +216,96 @@ box.shard =
         end
         connections = {}
         local i,j,shl,sh
+        local xx = 0
         for i, shl in pairs(list) do
             connected[i] = { rw = nil; all = {} }
             for j, sh in pairs(shl) do
                 (function (shno, nno, shcf)
                     local isrw = shcf[1] == 'rw'
                     local ckey = shcf[3] .. ':' .. shcf[4]
-                    printf("connecting for %s",ckey)
                     local shtp = i..'/'..shcf[1]
+                    if debugging then printf("connecting for %s=%s ...",ckey, shtp) end
                     if shno == me and nno == nodeno then
                         printf("skip %d/%d", me,nodeno)
                         return
                     end
-                    local con = box.net.box.new(shcf[3], shcf[4], remote_timeout)
+                    local con = box.net.box.new(shcf[3], shcf[4], remote_timeout, xx)
+                    xx = xx + 1
                     -- TODO: connect+ping behaves wrong
                     local fib = box.fiber.create(function()
-                        box.fiber.name("shard.conn."..ckey);
+                        box.fiber.name("shardc."..ckey);
                         box.fiber.detach()
+                        while true do
+                            local r,e = pcall(function()
+                                local t = con:timeout(0.05):call('box.shard.id')
+                                if t then return t[0] else return nil end
+                            end)
+                            if r and e then
+                                printf('shard id for %s=%s = %s',ckey,shtp,e)
+                                if e == _id then
+                                    print("It's me / "..shno, " rw:",isrw)
+                                    con:close()
+                                    con = box.net.self
+                                    if isrw then
+                                        print("set connected ",con)
+                                        connected[ shno ]['rw'] = box.net.self
+                                    end
+                                    table.insert(connected[ shno ]['all'],box.net.self)
+                                    connections[ckey]['status'] = true
+                                    return
+                                end
+                                break
+                            else
+                            	-- print(r,e)
+                                box.fiber.sleep(1)
+                            end
+                        end
                         while true do
                             -- printf("ping %s:%s...", con.host, con.port)
                             local time1 = hitime();
                             local r,e = pcall(function()
-                                -- return con:timeout(remote_timeout):ping()
-                                return con:ping()
+                                return con:timeout(remote_timeout):ping()
+                                --return con:ping()
                             end)
                             time1 = hitime()-time1
-                            --printf("pong %s:%s -> %s %s %f", con.host, con.port, r,e, time1)
+                            -- printf("pong %s:%s -> %s %s %f", con.host, con.port, r,e, time1)
                             if r and e then
                                 -- connection good
                                 if not connections[ckey]['status'] then
-                                    if debug then printf("connection to %s=%s became ok: %s / %f",ckey, shtp, e, time1) end
+                                    if debugging then printf("connection to %s=%s became ok: %s / %f",ckey, shtp, e, time1) end
                                     if isrw then
                                         connected[ shno ]['rw'] = con
                                     end
                                     table.insert(connected[ shno ]['all'],con)
                                     connections[ckey]['status'] = true
+                                    if callbacks.connected then callbacks.connected( shno, con, isrw ) end
                                 end
                                 box.fiber.sleep(1)
                             else
                                 -- connection bad
                                 if not r then printf("connection to %s=%s failed: %s / %f",ckey,shtp,e, time1) end
                                 if connections[ckey]['status'] then
-                                    if debug then printf("connection to %s=%s became bad: %s / %f",ckey, shtp, e, time1) end
+                                    if debugging then printf("connection to %s=%s became bad: %s / %f",ckey, shtp, e, time1) end
+                                    if callbacks.disconnected then callbacks.disconnected( shno, con, isrw ) end
                                     if isrw then
                                         connected[ shno ]['rw'] = nil
                                     end
                                     for k,v in pairs(connected[ shno ]['all']) do
                                         if con == v then
-                                            print("removing ",k," from all")
+                                            printf("removing %d from all %s:%s", k,v.host,v.port)
                                             table.remove(connected[ shno ]['all'], k )
                                             break;
                                         else
-                                            print("skip ",k," in all")
+                                            -- print("skip ",k," in all")
                                         end
                                     end
                                     connections[ckey]['status'] = false
                                 end
-                                box.fiber.sleep(0.01)
+                                box.fiber.sleep(1)
                             end
                         end
                     end)
+                    print("store fiber ".. box.fiber.id(fib) .." in " ..ckey.. " > ", connections[ckey])
                     connections[ckey] = {
                         c = con,
                         f = fib
@@ -317,14 +352,28 @@ box.shard =
             ]]--
         end
     end
+    local function connections_debug()
+        for shardno,v in pairs(connected) do
+            print(shardno,":")
+            for ix,lst in pairs(v) do
+                if ix == 'rw' then
+                    print("\t",ix," ", lst and "ok" or "none")
+                else
+                    print("\t",ix," ", #lst)
+                end
+            end
+        end
+    end
 
     -- return connection by
     local function connection(shardno, mode)
         if shardno > #list or shardno < 1 then
             error("Wrong shard number")
         end
+        -- connections_debug()
         if mode == 'rw' then
             if list[shardno][1][1] == 'rw' then
+                --print(table.concat(connected,', '))
                 if connected[shardno]['rw'] then
                     return connected[shardno]['rw']
                 end
@@ -332,11 +381,12 @@ box.shard =
             end
             errorf("There is no shard configured as 'rw' for shard %d", shardno)
         end
+        --connections_debug()
         
         if #connected[shardno]['all'] > 0 then
             return connected[shardno]['all'][ math.random(1, #connected[shardno]['all']) ]
         end
-        errorf("Not conneted to any node for shard %d", shardno)
+        errorf("Not connected to any node for shard %d", shardno)
     end
     
     local function copy_space(space)
@@ -374,8 +424,13 @@ box.shard =
     local self
 
     self = {
+        id = function () return _id end,
         schema = {
             -- shard.schema.config()
+            info = function ()
+                connections_debug()
+                -- print('XXX')
+            end,
             config = function(cfg)
                 if type(cfg) ~= 'table' then
                     error("Usage: shard.schema.config({name = value, ...})")
@@ -460,7 +515,14 @@ box.shard =
                         internal_spaces[ i ] = true
                     end
                 end
-
+                
+                if cfg.on_connected then
+                    callbacks["connected"] = cfg.on_connected
+                end
+                if cfg.on_disconnected then
+                    callbacks["disconnected"] = cfg.on_disconnected
+                end
+                
                 if numbers then
                     return 1
                 else
@@ -492,7 +554,11 @@ box.shard =
                     return FALSE()
                 end
                 return TRUE()
-            end
+            end,
+            
+            curr = curr_valid,
+            prev = prev_valid,
+            connection = connection,
         },
 
         internal = {
@@ -546,12 +612,12 @@ box.shard =
 
             -- shard.insert(space, ...)
             insert = function(ttl, space, ...)
-                if (debug) then print(".internal.insert(",table.concat({ttl,space,...},","),")") end
+                if (debugging) then print(".internal.insert(",table.concat({ttl,space,...},","),")") end
                 ttl = tonumber(ttl)
                 space = unpack_number(space)
                 local key = extract_key(space, ...)
                 local shardno = curr_valid(space, unpack(key))
-                if (debug) then print(".internal.insert fwd to ",shardno) end
+                if (debugging) then print(".internal.insert fwd to ",shardno) end
 
                 if shardno ~= me or mode ~= 'rw' then
                     if ttl <= 0 then
@@ -725,7 +791,7 @@ box.shard =
 
         -- box.shard.insert(space, ...)
         insert = function(space, ...)
-            if (debug) then print(".insert(",table.concat({space,...},","),")") end
+            if (debugging) then print(".insert(",table.concat({space,...},","),")") end
             return box.shard.internal.insert(1, space, ...)
         end,
 
