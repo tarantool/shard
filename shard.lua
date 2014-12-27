@@ -32,10 +32,10 @@ box.shard =
     local function printf(msg, ...)
         print(string.format(msg, ...))
     end
-    
+
     local _id = box.uuid_hex()
     printf("Configuring shard with id = %s",_id)
-    
+
     local debugging = true
     local list = {}
     local me = 0
@@ -47,7 +47,7 @@ box.shard =
     local prev
     local numbers = false
     local lock = {}
-    
+
     local callbacks = {}
 
     local internal_spaces = {}
@@ -212,7 +212,12 @@ box.shard =
     local connected = {}
     local function connect_all()
         if connections ~= nil then
-            error("TODO: cancel fibers")
+            print("Restarting configuration")
+            for key, val in pairs(connections) do
+                if not pcall(function() box.fiber.cancel(val['f']) end) then
+                    print("Can't restart fiber of " .. key .. " connection")
+                end
+            end
         end
         connections = {}
         local i,j,shl,sh
@@ -382,13 +387,13 @@ box.shard =
             errorf("There is no shard configured as 'rw' for shard %d", shardno)
         end
         --connections_debug()
-        
+
         if #connected[shardno]['all'] > 0 then
             return connected[shardno]['all'][ math.random(1, #connected[shardno]['all']) ]
         end
         errorf("Not connected to any node for shard %d", shardno)
     end
-    
+
     local function copy_space(space)
         local count = 0
         while true do
@@ -515,21 +520,21 @@ box.shard =
                         internal_spaces[ i ] = true
                     end
                 end
-                
+
                 if cfg.on_connected then
                     callbacks["connected"] = cfg.on_connected
                 end
                 if cfg.on_disconnected then
                     callbacks["disconnected"] = cfg.on_disconnected
                 end
-                
+
                 if numbers then
                     return 1
                 else
                     return '1'
                 end
             end,
-            
+
             autome = function()
                 if #list == 0 then error("list must be configured") end
                 local ip = box.cfg.bind_ipaddr;
@@ -555,7 +560,7 @@ box.shard =
                 end
                 return TRUE()
             end,
-            
+
             curr = curr_valid,
             prev = prev_valid,
             connection = connection,
@@ -745,7 +750,7 @@ box.shard =
                 end
 
                 local shardno = curr_valid(space, unpack(key))
-                
+
                 if shardno ~= me or mode ~= 'rw' then
                     local tnt = connection(shardno, 'rw')
                     if ttl <= 0 then
@@ -764,23 +769,25 @@ box.shard =
                 end
 
 
-                local tuple = box.select(space, 0, unpack(key))
+                key = unpack(key)
+
+                local tuple = box.select(space, 0, key)
                 if tuple ~= nil or prev == nil then
                     return box.update(space, key, format, unpack(oplist))
                 end
 
-                local pshardno = prev_valid(space, unpack(key))
+                local pshardno = prev_valid(space, key)
                 if pshardno == shardno then
                     return box.update(space, key, format, unpack(oplist))
                 end
 
                 local ptnt = connection(pshardno, 'rw')
-                local ptuple = ptnt:select(space, 0, unpack(key))
+                local ptuple = ptnt:select(space, 0, key)
                 if ptuple == nil then
                     return box.update(space, key, format, unpack(oplist))
                 end
 
-                tuple = box.select(space, 0, unpack(key))
+                tuple = box.select(space, 0, key)
                 if tuple ~= nil then
                     return box.update(space, key, format, unpack(oplist))
                 end
@@ -826,7 +833,7 @@ box.shard =
                     tnt = connection(shardno, mode)
                 end
             else
-                tnt = connection(shardno, mode)
+                tnt = connection(shardno, smode)
             end
 
             if tnt ~= nil then
@@ -844,7 +851,7 @@ box.shard =
             if pshardno == shardno then
                 return
             end
-            tnt = connection(pshardno, mode)
+            tnt = connection(pshardno, mode) -- FIXME: Use smode instead ?
             return tnt:select(space, 0, ...)
         end,
 
