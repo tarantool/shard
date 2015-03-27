@@ -30,7 +30,7 @@ box.cfg {
     listen = cfg.binary
 }
 
-if not box.space.accounts then
+if not box.space.demo then
     box.schema.user.create(cfg.login, { password = cfg.password })
     box.schema.user.grant(cfg.login, 'read,write,execute', 'universe')
 	
