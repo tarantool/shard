@@ -1,10 +1,10 @@
 Tarantool sharding module
 =========================
 
-Shading lua module for tarantool 1.6. API:
-* init() - connect to all shards
-* check_shard() - check that instanse is correct after init
-* request() - base function to execute database operations with shard
+Shading lua module for [tarantool 1.6](http://tarantool.org). API:
+* init - connect to all shards
+* check_shard - check that instanse is correct after init
+* request - base function to execute database operations with shard
 * insert
 * select
 * replace
@@ -15,12 +15,12 @@ Database operations by default has easy implementation.
 
 Install
 -------
-1. Add tarantool repository for yum or apt
-2. (apt)
+1. Add [tarantool repository](http://tarantool.org/download.html) for yum or apt
+2. apt
 ```bash
 $sudo apt-get install tarantool-shard
 ```
-2. yum
+yum
 ```bash
 $sudo yum install tarantool-shard
 ```
