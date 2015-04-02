@@ -11,13 +11,6 @@ local servers_n
 local redundancy = 3
 local REMOTE_TIMEOUT = 500
 
--- errors handling
-local function die(msg, ...)
-    local err = string.format(msg, ...)
-    log.error(err)
-    error(err)
-end
-
 -- main shards search function
 local function shard(key)
     local num = digest.crc32(key)
@@ -35,21 +28,26 @@ local function shard(key)
     return shards
 end
 
+-- base remote operation call
+local function single_call(space, server, operation, ...)
+    local status, reason = pcall(function(...)
+        self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
+        result = self[operation](self, ...)
+    end, ...)
+    if not status then
+        log.error('failed to %s on %s: %s', operation, server.uri, reason)
+        if not server.conn:is_connected() then
+            log.error("server %s is offline", server.uri)
+        end
+    end
+end
+
 -- shards request function
 local function request(space, operation, tuple_id, ...)
     result = nil
-    local args = {...}
+    --local args = {...}
     for _, server in ipairs(shard(tuple_id)) do
-        local status, reason = pcall(function()
-            self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
-			result = self[operation](self, unpack(args))
-		end)
-		if not status then
-			log.error('failed to %s on %s: %s', operation, server.uri, reason)
-			if not server.conn:is_connected() then
-				log.error("server %s is offline", server.uri)
-			end
-		end
+        single_call(space, server, operation, ...)
 	end
 	return result
 end
@@ -101,16 +99,7 @@ local function init(cfg, callback)
                     zones[server.zone] = zone
                     table.insert(servers, zone)
                 end
-                if conn:eval('return box.info.server.uuid') == box.info.server.uuid then
-                    -- detected self
-                    log.info(" - self is %s:%s", conn.host, conn.port)
-                    conn:close()
-                    conn = remote.self
-                    -- A workaround for #746
-                    conn.is_connected = function() return true end
-                end
                 local srv = { uri = server.uri, conn = conn}
-                -- there must be callback
                 if callback ~= nil then
                     callback(srv)
                 end
@@ -131,13 +120,19 @@ local function init(cfg, callback)
     return true
 end
 
+local function len()
+    return servers_n
+end
 
-local shard = {
+
+local shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
     servers = servers, 
-    servers_n = servers_n,
+    len = len,
     redundancy = redundancy,
     
+    shard = shard,
+    single_call = single_call,
     request = request,
     init = init,
     check_shard = check_shard,
@@ -145,13 +140,13 @@ local shard = {
     select = select,
     replace = replace,
     update = update,
-    delete = delete
+    delete = delete,
 }
 
-setmetatable(shard, {
+setmetatable(shard_obj, {
     __index = function(self, space)
         return {
-	    insert = function(...)
+	        insert = function(...)
                 return self.insert(space, ...)
             end,
             select = function(...)
@@ -165,10 +160,14 @@ setmetatable(shard, {
             end,
             update = function(...)
                 return self.update(space, ...)
-           end
+            end,
+            single_call = function(...)
+                return self.single_call(space, ...)
+            end
         }
     end
 })
 
-return shard
+return shard_obj
 -- vim: ts=4:sw=4:sts=4:et
+
