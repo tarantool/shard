@@ -5,11 +5,22 @@ local log = require('log')
 local digest = require('digest')
 local msgpack = require('msgpack')
 local remote = require('net.box')
+local yaml = require('yaml')
 
 local servers = {}
 local servers_n
 local redundancy = 3
 local REMOTE_TIMEOUT = 500
+local HEARTBEAT_TIMEOUT = 500
+local self_heartbeat
+
+heartbeat_state = {}
+
+-- sharding heartbeat monitoring function
+function heartbeat()
+    log.debug('ping')
+	return heartbeat_state
+end
 
 -- main shards search function
 local function shard(key)
@@ -26,6 +37,75 @@ local function shard(key)
         end
     end
     return shards
+end
+
+-- merge node response data with local table by fiber time
+local function merge_tables(response)
+	if response == nil then
+	    return
+	end
+	for seen_by_uri, node_table in pairs(response) do
+		local node_data = heartbeat_state[seen_by_uri]
+		if not node_data then
+			heartbeat_state[seen_by_uri] = node_table
+			node_data = heartbeat_state[seen_by_uri]
+		end
+		for uri, data in pairs(node_table) do
+		    -- update if not data or if we have fresh time
+			local empty_row = not node_data[uri] or not node_data[uri].ts
+			if empty_row or data.ts > node_data[uri].ts then
+				log.info('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
+				node_data[uri] = data
+			end
+		end
+	end
+end
+
+-- heartbeat table and opinions management
+local function update_heartbeat(uri, response, status)
+	-- set or update opinions and timestamp
+	local opinion = heartbeat_state[self_heartbeat.uri]
+	if not opinion[uri] then
+		opinion[uri] = {
+			try= 0,         -- number of errors
+			ts=fiber.time() -- time of try
+		}
+	end
+	if not status then
+		opinion[uri].try = opinion[uri].try + 1
+	else
+		opinion[uri].try = 0
+	end
+	opinion[uri].ts = fiber.time()
+	
+	-- update local heartbeat table
+	merge_tables(response)
+end
+
+-- heartbeat worker
+local function heartbeat_fiber()
+    fiber.name("heartbeat")
+    heartbeat_state[self_heartbeat.uri] = {}
+    local i = 0
+    while true do
+		i = i + 1
+		-- random select node to check
+        local server = servers[math.random(servers_n)][1]
+		local uri = server.uri
+		log.info("checking %s", uri)
+		
+		-- get heartbeat from node
+		local response
+		local status, err_state = pcall(function()
+			response = server.conn:timeout(
+			    HEARTBEAT_TIMEOUT):eval("return heartbeat()")
+		end)	
+		-- update local heartbeat table
+		update_heartbeat(uri, response, status)	
+		log.info("%s", yaml.encode(heartbeat_state))
+		-- randomized wait for next check 
+		fiber.sleep(math.random(1000)/1000)
+    end
 end
 
 -- base remote operation call
@@ -45,7 +125,6 @@ end
 -- shards request function
 local function request(space, operation, tuple_id, ...)
     result = nil
-    --local args = {...}
     for _, server in ipairs(shard(tuple_id)) do
         single_call(space, server, operation, ...)
 	end
@@ -103,6 +182,9 @@ local function init(cfg, callback)
                 if callback ~= nil then
                     callback(srv)
                 end
+                if srv.uri == cfg.my_uri then
+                    self_heartbeat = srv
+                end
                 table.insert(zone, srv)
                 break
             end
@@ -117,6 +199,7 @@ local function init(cfg, callback)
     servers_n = #servers
     log.info("redundancy = %d", redundancy)
     log.info('started')
+    fiber.create(heartbeat_fiber)
     return true
 end
 
@@ -124,9 +207,14 @@ local function len()
     return servers_n
 end
 
+local function get_heartbeat()
+    return heartbeat_state
+end
+
 
 local shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
+    HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
     servers = servers, 
     len = len,
     redundancy = redundancy,
@@ -141,6 +229,7 @@ local shard_obj = {
     replace = replace,
     update = update,
     delete = delete,
+    get_heartbeat = get_heartbeat,
 }
 
 setmetatable(shard_obj, {
