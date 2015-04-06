@@ -12,6 +12,7 @@ local servers_n
 local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
+local DEAD_TIMEOUT = 3
 local self_heartbeat
 
 heartbeat_state = {}
@@ -39,6 +40,56 @@ local function shard(key)
     return shards
 end
 
+--returns random online shard
+local function random_shard()
+	local online = {}
+	local i = 1
+    for _, server in pairs(servers) do 
+        if server[1].conn:is_connected() then
+            online[i] = server[1]
+            i = i + 1
+        else
+            -- workaround for disconnections:
+            local opinion = heartbeat_state[self_heartbeat.uri]
+            if opinion and opinion[server[1].uri] ~= nil then
+				opinion[server[1].uri].try = DEAD_TIMEOUT + 1
+			end
+        end
+    end
+	return online[math.random(#online)]
+end
+
+-- shard monitoring fiber
+local function monitor_fiber()
+    fiber.name("monitor")
+    while true do
+        local server = random_shard()
+        local uri = server.uri
+        local dead = false
+        
+        for k, v in pairs(heartbeat_state) do
+            -- true only if there is stuff in heartbeat_state
+            dead = true
+            log.debug("monitoring: %s", uri)
+            break
+        end
+        for k, v in pairs(heartbeat_state) do
+			-- kill only if DEAD_TIMEOUT become in all servers
+            if v[uri] == nil or v[uri].try < DEAD_TIMEOUT then
+				log.debug("%s is alive", uri)
+                dead = false
+                break
+            end
+        end
+        
+        if dead then
+			log.info("kill %s by dead timeout", uri)
+            server.conn:close()
+        end
+        fiber.sleep(math.random(100)/1000)
+    end
+end
+
 -- merge node response data with local table by fiber time
 local function merge_tables(response)
 	if response == nil then
@@ -54,7 +105,7 @@ local function merge_tables(response)
 		    -- update if not data or if we have fresh time
 			local empty_row = not node_data[uri] or not node_data[uri].ts
 			if empty_row or data.ts > node_data[uri].ts then
-				log.info('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
+				log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
 				node_data[uri] = data
 			end
 		end
@@ -86,13 +137,11 @@ end
 local function heartbeat_fiber()
     fiber.name("heartbeat")
     heartbeat_state[self_heartbeat.uri] = {}
-    local i = 0
     while true do
-		i = i + 1
 		-- random select node to check
-        local server = servers[math.random(servers_n)][1]
+        local server = random_shard()
 		local uri = server.uri
-		log.info("checking %s", uri)
+		log.debug("checking %s", uri)
 		
 		-- get heartbeat from node
 		local response
@@ -102,7 +151,7 @@ local function heartbeat_fiber()
 		end)	
 		-- update local heartbeat table
 		update_heartbeat(uri, response, status)	
-		log.info("%s", yaml.encode(heartbeat_state))
+		log.debug("%s", yaml.encode(heartbeat_state))
 		-- randomized wait for next check 
 		fiber.sleep(math.random(1000)/1000)
     end
@@ -198,8 +247,13 @@ local function init(cfg, callback)
     redundancy = cfg.redundancy or #servers
     servers_n = #servers
     log.info("redundancy = %d", redundancy)
+    
+    -- run monitoring and heartbeat fibers by default
+    if cfg.monitor == nil or cfg.monitor then
+		fiber.create(heartbeat_fiber)
+		fiber.create(monitor_fiber)
+    end
     log.info('started')
-    fiber.create(heartbeat_fiber)
     return true
 end
 
@@ -215,6 +269,7 @@ end
 local shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
+    DEAD_TIMEOUT = DEAD_TIMEOUT,
     servers = servers, 
     len = len,
     redundancy = redundancy,

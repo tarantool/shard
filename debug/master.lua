@@ -1,9 +1,7 @@
 shard = require('shard')
-log = require('log')
 local cfg = {
     servers = {
         { uri = 'localhost:3313', zone = '0' };
---        { uri = 'build.tarantool.org:33020', zone = '1' };
         { uri = 'localhost:3314', zone = '1' };
     };
     http = 8080;
@@ -31,5 +29,3 @@ if not box.space.demo then
     demo:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
 shard.init(cfg)
---shard.demo.insert({0, 'test'})
---shard.demo.delete(0)
