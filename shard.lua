@@ -275,6 +275,7 @@ local shard_obj = {
     redundancy = redundancy,
     
     shard = shard,
+    random_shard = random_shard,
     single_call = single_call,
     request = request,
     init = init,

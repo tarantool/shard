@@ -4,6 +4,8 @@ Tarantool sharding module
 Shading lua module for [tarantool 1.6](http://tarantool.org). API:
 * init - connect to all shards
 * check_shard - check that instanse is correct after init
+* shard - returns shards for given key
+* random_shard - returns random online shard
 * get_heartbeat - returns last heartbeat table for all shards
 * single_call - call opretarion for given space and server
 * request - base function to execute database operations with shard
