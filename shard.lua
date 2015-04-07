@@ -13,7 +13,7 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 100
-local RECONECT_AFTER = 1
+local RECONNECT_AFTER = 1
 local self_heartbeat
 
 heartbeat_state = {}
