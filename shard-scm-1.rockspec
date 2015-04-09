@@ -5,7 +5,7 @@ source  = {
     branch = 'master',
 }
 description = {
-    summary  = "Lua sharding for tarantool 1.6",
+    summary  = "Lua sharding for Tarantool",
     homepage = 'https://github.com/tarantool/shard.git',
     license  = 'BSD',
 }
@@ -16,7 +16,7 @@ build = {
     type = 'builtin',
 
     modules = {
-        ['shard']                          = 'shard.lua'
+        ['shard'] = 'shard.lua'
     }
 }
 

@@ -5,7 +5,6 @@ Shading lua module for [tarantool 1.6](http://tarantool.org). API:
 * init - connect to all shards
 * check_shard - check that instanse is correct after init
 * shard - returns shards for given key
-* random_shard - returns random online shard
 * get_heartbeat - returns last heartbeat table for all shards
 * single_call - call opretarion for given space and server
 * request - base function to execute database operations with shard
@@ -16,6 +15,13 @@ Shading lua module for [tarantool 1.6](http://tarantool.org). API:
 * delete
 
 Database operations by default has easy implementation. 
+
+Configuration
+-------------
+* REMOTE_TIMEOUT - timeout for shards call
+* HEARTBEAT_TIMEOUT - timeout for heartbeat tick
+* DEAD_TIMEOUT - number of falures before we close a connection with dead shard
+* RECONNECT_AFTER - enable net.box reconnect_after option(can be nil)
 
 Install
 -------
