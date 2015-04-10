@@ -21,7 +21,7 @@ Configuration
 * REMOTE_TIMEOUT - timeout for shards call
 * HEARTBEAT_TIMEOUT - timeout for heartbeat tick
 * DEAD_TIMEOUT - number of falures before we close a connection with dead shard
-* RECONNECT_AFTER - enable net.box reconnect_after option(can be nil)
+* RECONNECT_AFTER - replace connect fiber with net.box reconnect_after (not recommended, by default=nil)
 
 Install
 -------
