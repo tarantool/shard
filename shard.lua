@@ -12,7 +12,7 @@ local servers_n
 local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
-local DEAD_TIMEOUT = 100
+local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = msgpack.NULL
 local self_heartbeat
 
@@ -33,7 +33,7 @@ local function shard(key, dead)
         local zone = servers[tonumber(1 + (num + i) % servers_n)]
         local server = zone[1 + digest.guava(num, #zone)]
         -- ignore died servers
-        if server.conn:is_connected() or dead ~= nil then
+        if not server.ignore and (server.conn:is_connected() or dead ~= nil) then
             shards[k] = server
             k = k + 1
         end
@@ -50,16 +50,17 @@ local function monitor_fiber()
         local server = shard(i, true)[1]
         local uri = server.uri
         local dead = false
-        
         for k, v in pairs(heartbeat_state) do
             -- true only if there is stuff in heartbeat_state
-            dead = true
-            log.debug("monitoring: %s", uri)
-            break
+            if k ~= uri then
+                dead = true
+                log.debug("monitoring: %s", uri)
+                break
+            end
         end
         for k, v in pairs(heartbeat_state) do
             -- kill only if DEAD_TIMEOUT become in all servers
-            if v[uri] == nil or v[uri].try < DEAD_TIMEOUT then
+            if k ~= uri and (v[uri] == nil or v[uri].try < DEAD_TIMEOUT) then
                 log.debug("%s is alive", uri)
                 dead = false
                 break
@@ -69,28 +70,10 @@ local function monitor_fiber()
         if dead then
             log.info("kill %s by dead timeout", uri)
             server.conn:close()
+            server.ignore = true
+            heartbeat_state[uri] = nil
         end
         fiber.sleep(math.random(100)/1000)
-    end
-end
-
--- reconnect worker
-local function connection_fiber()
-    fiber.name('connections')
-    while true do
-        -- select random zone and find dead shards
-        local zone = servers[math.random(#servers)]
-        for _, server in pairs(zone) do
-            if not server.conn:is_connected() then
-                -- try to reconnect with died server
-                pcall(function()
-                    server.conn = remote:new(
-                        server.login..':'..server.password..'@'..server.uri
-                    )
-                end)
-            end
-        end
-        fiber.sleep(math.random(50)/1000)
     end
 end
 
@@ -226,10 +209,11 @@ local function init(cfg, callback)
         local conn
         log.info(' - %s - connecting...', server.uri)
         while true do
-            conn = remote:new(cfg.login..':'..cfg.password..'@'..server.uri,
-        { reconnect_after = RECONNECT_AFTER })
-            conn:ping()
-            if check_shard(conn) then
+            conn = remote:new(
+                cfg.login..':'..cfg.password..'@'..server.uri,
+                { reconnect_after = RECONNECT_AFTER }
+            )
+            if conn:ping() and check_shard(conn) then
                 local zone = zones[server.zone]
                 if not zone then
                     zone = {}
@@ -237,7 +221,7 @@ local function init(cfg, callback)
                     table.insert(servers, zone)
                 end
                 local srv = { 
-                    uri = server.uri, conn = conn, 
+                    uri = server.uri, conn = conn,
                     login=cfg.login, password=cfg.password
                 }
                 if callback ~= nil then
@@ -264,10 +248,6 @@ local function init(cfg, callback)
     if cfg.monitor == nil or cfg.monitor then
         fiber.create(heartbeat_fiber)
         fiber.create(monitor_fiber)
-        -- if we don't use net_box reconnect - start connection fiber
-        if RECONNECT_AFTER == nil then
-            fiber.create(connection_fiber)
-        end
     end
     log.info('started')
     return true
