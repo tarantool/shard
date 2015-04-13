@@ -165,6 +165,7 @@ end
 
 -- base remote operation call
 local function single_call(space, server, operation, ...)
+    result = nil
     local status, reason = pcall(function(...)
         self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
         result = self[operation](self, ...)
@@ -175,13 +176,14 @@ local function single_call(space, server, operation, ...)
             log.error("server %s is offline", server.uri)
         end
     end
+    return result
 end
 
 -- shards request function
 local function request(space, operation, tuple_id, ...)
-    result = nil
-    for _, server in ipairs(shard(tuple_id)) do
-        single_call(space, server, operation, ...)
+    result = {}
+    for i, server in ipairs(shard(tuple_id)) do
+        result[i] = single_call(space, server, operation, ...)
     end
     return result
 end
@@ -262,10 +264,10 @@ local function init(cfg, callback)
     if cfg.monitor == nil or cfg.monitor then
         fiber.create(heartbeat_fiber)
         fiber.create(monitor_fiber)
-    end
-    -- if we don't use net_box reconnect - start connection fiber
-    if RECONNECT_AFTER == nil then
-        fiber.create(connection_fiber)
+        -- if we don't use net_box reconnect - start connection fiber
+        if RECONNECT_AFTER == nil then
+            fiber.create(connection_fiber)
+        end
     end
     log.info('started')
     return true

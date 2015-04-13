@@ -2,6 +2,7 @@
 
 shard = require('shard')
 log = require('log')
+yaml = require('yaml')
 
 -- check that demo space exists
 shard.check_shard = function(conn)
@@ -16,7 +17,7 @@ local cfg = {
     -- shard login/password
     login = 'tester';
     password = 'pass';
-    
+    monitor = false;
     redundancy = 1;
     binary = 33021
 }
@@ -48,17 +49,17 @@ shard.demo.insert({0, 'test'})
 --test shard select
 print('select')
 data = shard.demo.select(0)
-print(data[1])
+print(yaml.encode(data))
 
 print('replace')
 shard.demo.replace({0, 'test2'})
 data = shard.demo.select()
-print(data[1])
+print(yaml.encode(data))
 
 print('update')
 shard.demo.update(0, {{'=', 2, 'test3'}})
 result = shard.demo.select()
-print(result[1])
+print(yaml.encode(result))
 
 shard.demo.delete(0)
 
