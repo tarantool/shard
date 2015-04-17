@@ -2,12 +2,12 @@ shard = require('shard')
 local cfg = {
     servers = {
         { uri = 'localhost:3313', zone = '0' };
-        { uri = 'localhost:3314', zone = '1' };
+        { uri = 'localhost:3314', zone = '0' };
     };
     http = 8080;
     login = 'tester';
     password = 'pass';
-    redundancy = 2;
+    redundancy = 1;
     binary = 3313;
     my_uri = 'localhost:3313'
 }
@@ -26,6 +26,8 @@ if not box.space.demo then
     box.schema.user.grant(cfg.login, 'read,write,execute', 'universe')
 	
     local demo = box.schema.create_space('demo')
-    demo:create_index('primary', {type = 'hash', parts = {1, 'str'}})
+    demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
 end
 shard.init(cfg)
+require('fiber').sleep(3)
+require('log').info(require('yaml').encode(box.space.demo:select{}))

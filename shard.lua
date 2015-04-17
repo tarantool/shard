@@ -13,10 +13,76 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
+local WORKERS = 10
 local RECONNECT_AFTER = msgpack.NULL
 local self_heartbeat
 
 heartbeat_state = {}
+
+--queue implementation
+local function queue_handler(self, fun)
+    fiber.name('queue/handler')
+    while true do
+        local args = self.ch:get()
+        if not args then
+            break
+        end
+        local status, reason = pcall(fun, args)
+        if not status then
+            if not self.error then
+                self.error = reason
+                -- stop fiber queue
+                self.ch:close()
+            else
+                self.error = self.error.."\n"..reason
+            end
+            break
+        end
+    end
+    self.chj:put(true)
+end
+
+local queue_mt
+local function queue(fun, workers)
+    -- Start fiber queue to processes transactions in parallel
+    local channel_size = math.min(workers, 1000)
+    local ch = fiber.channel(workers)
+    local chj = fiber.channel(workers)
+    local self = setmetatable({ ch = ch, chj = chj, workers = workers }, queue_mt)
+    for i=1,workers do
+        fiber.create(queue_handler, self, fun)
+    end
+    return self
+end
+
+local function queue_join(self)
+    log.debug("queue.join(%s)", self)
+    -- stop fiber queue
+    while self.ch:is_closed() ~= true and self.ch:is_empty() ~= true do
+        fiber.sleep(0)
+    end
+    self.ch:close()
+    -- wait until fibers stop
+
+    for i = 1, self.workers do
+        self.chj:get()
+    end
+    log.debug("queue.join(%s): done", self)
+    if self.error then
+        return error(self.error) -- re-throw error
+    end
+end
+
+local function queue_put(self, arg)
+    self.ch:put(arg)
+end
+
+queue_mt = {
+    __index = {
+        join = queue_join;
+        put = queue_put;
+    }
+}
 
 -- sharding heartbeat monitoring function
 function heartbeat()
@@ -171,6 +237,47 @@ local function request(space, operation, tuple_id, ...)
     return result
 end
 
+-- execute operation, call from remote node 
+function queue_operation(space, operation, ...)
+    log.info('space=%s', space)
+    log.info('operation=%s', operation)
+    local status, reason = pcall(function(...)
+        local self = box.space[space]
+        self[operation](self, ...)
+    end, ...)
+    if not status then
+        log.error('failed to %s in space %s: %s', operation, 
+              space, reason)
+    end
+end
+
+-- execute operation in queue
+local function push_operation(task)
+    local server = task.server
+    local status, reason = pcall(function()
+        server.conn:timeout(REMOTE_TIMEOUT):call("queue_operation",
+            task.space, task.operation, unpack(task.args))
+    end)
+    if not status then
+        log.error('failed to queue task on %s, %s', server.uri, reason)
+    end
+end
+local q
+
+-- fast request with queue
+local function queue_request(space, operation, tuple_id, ...)
+    for _, server in ipairs(shard(tuple_id)) do
+        local task = {
+            server = server,
+            id = tuple_id,
+            space = space,
+            operation = operation,
+            args = {...};
+        }
+        q:put(task)
+    end
+end
+
 -- default request wrappers for db operations
 local function insert(space, data)
     tuple_id = data[1]
@@ -192,6 +299,24 @@ end
 
 local function update(space, key, data)
     return request(space, 'update', key, key, data)
+end
+
+local function q_insert(space, data)
+    tuple_id = data[1]
+    return queue_request(space, 'insert', tuple_id, data)
+end
+
+local function q_replace(space, data)
+    tuple_id = data[1]
+    return queue_request(space, 'replace', tuple_id, data)
+end
+
+local function q_delete(space, tuple_id)
+    return queue_request(space, 'delete', tuple_id, tuple_id)
+end
+
+local function q_update(space, key, data)
+    return queue_request(space, 'update', key, key, data)
 end
 
 -- function for shard checking after init
@@ -249,6 +374,7 @@ local function init(cfg, callback)
         fiber.create(heartbeat_fiber)
         fiber.create(monitor_fiber)
     end
+    q = queue(push_operation, WORKERS)
     log.info('started')
     return true
 end
@@ -267,6 +393,7 @@ local shard_obj = {
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
     DEAD_TIMEOUT = DEAD_TIMEOUT,
     RECONNECT_AFTER = RECONNECT_AFTER,
+    WORKERS = WORKERS,
     servers = servers, 
     len = len,
     redundancy = redundancy,
@@ -275,6 +402,7 @@ local shard_obj = {
     random_shard = random_shard,
     single_call = single_call,
     request = request,
+    queue_request = queue_request,
     init = init,
     check_shard = check_shard,
     insert = insert,
@@ -303,6 +431,20 @@ setmetatable(shard_obj, {
             update = function(...)
                 return self.update(space, ...)
             end,
+            
+            q_insert = function(...)
+                return self.q_insert(space, ...)
+            end,
+            q_replace = function(...)
+                return self.q_replace(space, ...)
+            end,
+            q_delete = function(...)
+                return self.q_delete(space, ...)
+            end,
+            q_update = function(...)
+                return self.q_update(space, ...)
+            end,
+            
             single_call = function(...)
                 return self.single_call(space, ...)
             end
