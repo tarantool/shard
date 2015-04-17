@@ -1,20 +1,30 @@
 Tarantool sharding module
 =========================
 
-Shading lua module for [tarantool 1.6](http://tarantool.org). API:
+Shading lua module for [tarantool 1.6](http://tarantool.org) with direct and queued operations. API:
 * init - connect to all shards
 * check_shard - check that instanse is correct after init
 * shard - returns shards for given key
 * get_heartbeat - returns last heartbeat table for all shards
 * single_call - call opretarion for given space and server
 * request - base function to execute database operations with shard
+
+There are 2 execution protocols.
+Direct operations:
 * insert
 * select
 * replace
 * update
 * delete
 
-Database operations by default has easy implementation. 
+Queued operations:
+* q_insert
+* q_replace
+* q_update
+* q_delete
+* check_operation - return true if operation exists in needed shards
+
+Database operations by default has easy implementation.
 
 Configuration
 -------------
@@ -22,6 +32,7 @@ Configuration
 * HEARTBEAT_TIMEOUT - timeout for heartbeat tick
 * DEAD_TIMEOUT - number of falures before we close a connection with dead shard
 * RECONNECT_AFTER - replace connect fiber with net.box reconnect_after (not recommended, by default=nil)
+* WORKERS - number of queue workers
 
 Install
 -------
@@ -73,6 +84,6 @@ shard.demo.replace({0, 'test2'})
 shard.demo.update(0, {{'=', 2, 'test3'}})
 shard.demo.delete(0)
 ```
-See demo.lua for full example
+See debug/ for full example
 
 

@@ -1,4 +1,7 @@
 shard = require('shard')
+log = require('log')
+yaml = require('yaml')
+
 local cfg = {
     servers = {
         { uri = 'localhost:3313', zone = '0' };
@@ -27,7 +30,16 @@ if not box.space.demo then
 	
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
+
+    local operations = box.schema.create_space('operations')
+    operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
+
+-- init shards
 shard.init(cfg)
+
+-- wait for operations
 require('fiber').sleep(3)
-require('log').info(require('yaml').encode(box.space.demo:select{}))
+
+-- show results
+log.info(yaml.encode(box.space.demo:select{}))

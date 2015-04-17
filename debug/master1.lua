@@ -1,4 +1,7 @@
 shard = require('shard')
+log = require('log')
+yaml = require('yaml')
+
 local cfg = {
     servers = {
         { uri = 'localhost:3313', zone = '0' };
@@ -28,16 +31,21 @@ if not box.space.demo then
 
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
+    local operations = box.schema.create_space('operations')
+    operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
+
+-- init shards
 shard.init(cfg)
 
---shard.queue_request('demo', 1, 'insert', {1, 'second', 'third'})
---shard.queue_request('demo', 2, 'insert', {2, 'second'})
---shard.queue_request('demo', 3, 'insert', {3, 'test'})
-shard.demo.insert({1, 'second', 'third'})
-shard.demo.insert({2, 'second'})
-shard.demo.insert({3, 'test'})
-shard.demo.replace({3, 'test2'})
-shard.demo.update(3, {{'=', 2, 'test3'}})
+-- do inser, replace, update operations
+shard.demo.q_insert(1, {1, 'second', 'third'})
+shard.demo.q_insert(2, {2, 'second'})
+shard.demo.q_insert(3, {3, 'test'})
+shard.demo.q_replace(4, {3, 'test2'})
+shard.demo.q_update(5, 3, {{'=', 2, 'test3'}})
+
+-- wait and show results
 require('fiber').sleep(3)
-require('log').info(require('yaml').encode(box.space.demo:select{}))
+log.info(yaml.encode(box.space.demo:select{}))
+log.info(yaml.encode(shard.demo.check_operation(1, 1)))

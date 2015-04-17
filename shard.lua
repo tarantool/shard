@@ -19,6 +19,10 @@ local self_heartbeat
 
 heartbeat_state = {}
 
+local STATE_NEW = 0
+local STATE_INPROGRESS = 1
+local STATE_HANDLED = 2
+
 --queue implementation
 local function queue_handler(self, fun)
     fiber.name('queue/handler')
@@ -238,44 +242,105 @@ local function request(space, operation, tuple_id, ...)
 end
 
 -- execute operation, call from remote node 
-function queue_operation(space, operation, ...)
-    log.info('space=%s', space)
-    log.info('operation=%s', operation)
-    local status, reason = pcall(function(...)
+function execute_operation(operation_id)
+    log.debug('EXEC_OP')
+    local tuple = box.space.operations:update(
+        operation_id, {{'=', 2, STATE_INPROGRESS}}
+    )
+    local space = tuple[3]
+    local operation = tuple[4]
+    local args = tuple[5]
+    local status, reason = pcall(function()
         local self = box.space[space]
-        self[operation](self, ...)
-    end, ...)
+        self[operation](self, unpack(args))
+    end)
     if not status then
         log.error('failed to %s in space %s: %s', operation, 
               space, reason)
     end
+    box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
 end
 
--- execute operation in queue
+-- process operation in queue
 local function push_operation(task)
     local server = task.server
-    local status, reason = pcall(function()
-        server.conn:timeout(REMOTE_TIMEOUT):call("queue_operation",
-            task.space, task.operation, unpack(task.args))
-    end)
-    if not status then
-        log.error('failed to queue task on %s, %s', server.uri, reason)
-    end
+    local tuple = task.tuple
+    log.debug('PUSH_OP')
+    server.conn:timeout(REMOTE_TIMEOUT).space.operations:insert(tuple)
 end
-local q
+
+local function ack_operation(task)
+    log.debug('ACK_OP')
+    local server = task.server
+    local operation_id = task.id
+    server.conn:timeout(REMOTE_TIMEOUT):call(
+        'execute_operation', operation_id
+    )
+end
 
 -- fast request with queue
-local function queue_request(space, operation, tuple_id, ...)
+local function queue_request(space, operation, operation_id, tuple_id, ...)
+    -- queued push operation in shards
+    operation_id = tostring(operation_id)
+	q = queue(push_operation, WORKERS)
     for _, server in ipairs(shard(tuple_id)) do
-        local task = {
-            server = server,
-            id = tuple_id,
-            space = space,
-            operation = operation,
-            args = {...};
+        local tuple = {
+            operation_id;
+            STATE_NEW;
+            box.space[space].id;
+            operation;
+            {...}
         }
+        local task = {tuple = tuple, server = server}
         q:put(task)
     end
+    q:join()
+    -- all shards ready - start workers
+    q = queue(ack_operation, WORKERS)
+    for _, server in ipairs(shard(tuple_id)) do
+        q:put({id=operation_id, server=server})
+    end
+end
+
+function find_operation(id)
+    log.debug('FIND_OP')
+    return box.space.operations:get(id)[2]
+end
+
+local function check_operation(space, operation_id, tuple_id)
+    local delay = 0.001
+    operation_id = tostring(operation_id)
+    for i=1,100 do
+        local failed = nil
+        local task_status = nil
+        for _, server in pairs(shard(tuple_id)) do
+            -- check that transaction is queued to all hosts
+            local status, reason = pcall(function()
+                task_status = server.conn:timeout(REMOTE_TIMEOUT):call(
+                    'find_operation', operation_id
+                )[1][1]
+            end)
+            if not status then
+                -- wait until transaction will be queued on all hosts
+                failed = server.uri
+                break
+            end
+        end
+        if failed == nil then
+            if task_status == STATE_INPROGRESS then
+                q = queue(ack_operation, WORKERS)
+                for _, server in ipairs(shard(tuple_id)) do
+                    q:put({id=operation_id, server=server})
+                end
+                q:join()
+            end
+            return true
+        end
+        log.debug('FAIL')
+        fiber.sleep(delay)
+        delay = math.min(delay * 2, 5)
+    end
+    return false
 end
 
 -- default request wrappers for db operations
@@ -301,22 +366,22 @@ local function update(space, key, data)
     return request(space, 'update', key, key, data)
 end
 
-local function q_insert(space, data)
+local function q_insert(space, operation_id, data)
     tuple_id = data[1]
-    return queue_request(space, 'insert', tuple_id, data)
+    return queue_request(space, 'insert', operation_id, tuple_id, data)
 end
 
-local function q_replace(space, data)
+local function q_replace(space, operation_id, data)
     tuple_id = data[1]
-    return queue_request(space, 'replace', tuple_id, data)
+    return queue_request(space, 'replace', operation_id, tuple_id, data)
 end
 
-local function q_delete(space, tuple_id)
-    return queue_request(space, 'delete', tuple_id, tuple_id)
+local function q_delete(space, operation_id, tuple_id)
+    return queue_request(space, 'delete', operation_id, tuple_id, tuple_id)
 end
 
-local function q_update(space, key, data)
-    return queue_request(space, 'update', key, key, data)
+local function q_update(space, operation_id, key, data)
+    return queue_request(space, 'update', operation_id, key, key, data)
 end
 
 -- function for shard checking after init
@@ -410,6 +475,11 @@ local shard_obj = {
     replace = replace,
     update = update,
     delete = delete,
+    q_insert = q_insert,
+    q_replace = q_replace,
+    q_update = q_update,
+    q_delete = q_delete,
+    check_operation = check_operation,
     get_heartbeat = get_heartbeat,
 }
 
@@ -444,7 +514,10 @@ setmetatable(shard_obj, {
             q_update = function(...)
                 return self.q_update(space, ...)
             end,
-            
+            check_operation = function(...)
+                return self.check_operation(space, ...)
+            end,
+
             single_call = function(...)
                 return self.single_call(space, ...)
             end
