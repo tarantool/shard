@@ -360,7 +360,7 @@ local function next_id(space)
     if tuple == nil then
         tuple = _schema:insert{key, server_id}
     else
-        local next_id = tuple[2] + server_i
+        local next_id = tuple[2] + server_id
         tuple = _schema:update({key}, {{'=', 2, next_id}})
     end
     return tuple[2]
