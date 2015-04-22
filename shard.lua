@@ -6,6 +6,7 @@ local digest = require('digest')
 local msgpack = require('msgpack')
 local remote = require('net.box')
 local yaml = require('yaml')
+local uuid = require('uuid')
 
 local servers = {}
 local servers_n
@@ -15,7 +16,8 @@ local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
 local WORKERS = 10
 local RECONNECT_AFTER = msgpack.NULL
-local self_heartbeat
+
+local self_server
 
 heartbeat_state = {}
 
@@ -172,7 +174,7 @@ end
 -- heartbeat table and opinions management
 local function update_heartbeat(uri, response, status)
     -- set or update opinions and timestamp
-    local opinion = heartbeat_state[self_heartbeat.uri]
+    local opinion = heartbeat_state[self_server.uri]
     if not opinion[uri] then
         opinion[uri] = {
             try= 0,         -- number of errors
@@ -193,7 +195,7 @@ end
 -- heartbeat worker
 local function heartbeat_fiber()
     fiber.name("heartbeat")
-    heartbeat_state[self_heartbeat.uri] = {}
+    heartbeat_state[self_server.uri] = {}
     local i = 0
     while true do
         i = i + 1
@@ -349,6 +351,10 @@ local function insert(space, data)
     return request(space, 'insert', tuple_id, data)
 end
 
+local function auto_increment(space, data)
+    return request(space, 'insert', uuid.str(), data)
+end
+
 local function select(space, tuple_id)
     return request(space, 'select', tuple_id, tuple_id)
 end
@@ -369,6 +375,10 @@ end
 local function q_insert(space, operation_id, data)
     tuple_id = data[1]
     return queue_request(space, 'insert', operation_id, tuple_id, data)
+end
+
+local function q_auto_increment(space, operation_id, data)
+    return queue_request(space, 'insert', operation_id, uuid.str(), data)
 end
 
 local function q_replace(space, operation_id, data)
@@ -418,7 +428,7 @@ local function init(cfg, callback)
                     callback(srv)
                 end
                 if srv.uri == cfg.my_uri then
-                    self_heartbeat = srv
+                    self_server = srv
                 end
                 table.insert(zone, srv)
                 break
@@ -471,11 +481,13 @@ local shard_obj = {
     init = init,
     check_shard = check_shard,
     insert = insert,
+    auto_increment = auto_increment,
     select = select,
     replace = replace,
     update = update,
     delete = delete,
     q_insert = q_insert,
+    q_insert = q_auto_increment,
     q_replace = q_replace,
     q_update = q_update,
     q_delete = q_delete,
