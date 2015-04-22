@@ -63,6 +63,7 @@ print(yaml.encode(result))
 
 print('auto_increment')
 shard.demo.auto_increment{'test3'}
+shard.demo.auto_increment{'test4'}
 result = box.space.demo:select()
 print(yaml.encode(result))
 

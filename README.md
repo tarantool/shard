@@ -16,15 +16,17 @@ Direct operations:
 * replace
 * update
 * delete
+* auto_increment
 
 Queued operations:
 * q_insert
 * q_replace
 * q_update
 * q_delete
+* q_auto_increment
 * check_operation - return true if operation exists in needed shards
 
-Database operations by default has easy implementation.
+Database operations by default have an easy implementation.
 
 Configuration
 -------------
