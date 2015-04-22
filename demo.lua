@@ -12,7 +12,7 @@ end
 local cfg = {
     -- shards config
     servers = {
-        { uri = [[my-server.com:33020]]; zone = [[zone1]]};
+        { uri = [[localhost:33021]]; zone = [[1]]};
     };
     -- shard login/password
     login = 'tester';
@@ -35,8 +35,8 @@ if not box.space.demo then
     box.schema.user.create(cfg.login, { password = cfg.password })
     box.schema.user.grant(cfg.login, 'read,write,execute', 'universe')
 	
-    local demo = box.schema.create_space('demo')
-    demo:create_index('primary', {type = 'hash', parts = {1, 'str'}})
+    local demo = box.schema.space.create('demo')
+    demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
 end
 
 -- run sharing
@@ -48,7 +48,7 @@ shard.demo.insert({0, 'test'})
 
 --test shard select
 print('select')
-data = shard.demo.select(0)
+data = shard.demo.select{0}
 print(yaml.encode(data))
 
 print('replace')
@@ -58,8 +58,14 @@ print(yaml.encode(data))
 
 print('update')
 shard.demo.update(0, {{'=', 2, 'test3'}})
-result = shard.demo.select()
+result = shard.demo.select{0}
 print(yaml.encode(result))
+
+print('auto_increment')
+shard.demo.auto_increment{'test3'}
+result = box.space.demo:select()
+print(yaml.encode(result))
+
 
 shard.demo.delete(0)
 

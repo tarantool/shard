@@ -138,7 +138,7 @@ local function monitor_fiber()
                 break
             end
         end
-        
+
         if dead then
             log.info("kill %s by dead timeout", uri)
             server.conn:close()
@@ -187,7 +187,7 @@ local function update_heartbeat(uri, response, status)
         opinion[uri].try = 0
     end
     opinion[uri].ts = fiber.time()
-    
+
     -- update local heartbeat table
     merge_tables(response)
 end
@@ -203,7 +203,7 @@ local function heartbeat_fiber()
         local server = shard(i, true)[1]
         local uri = server.uri
         log.debug("checking %s", uri)
-        
+
         -- get heartbeat from node
         local response
         local status, err_state = pcall(function()
@@ -213,7 +213,7 @@ local function heartbeat_fiber()
         -- update local heartbeat table
         update_heartbeat(uri, response, status)
         log.debug("%s", yaml.encode(heartbeat_state))
-        -- randomized wait for next check 
+        -- randomized wait for next check
         fiber.sleep(math.random(1000)/1000)
     end
 end
@@ -243,7 +243,7 @@ local function request(space, operation, tuple_id, ...)
     return result
 end
 
--- execute operation, call from remote node 
+-- execute operation, call from remote node
 function execute_operation(operation_id)
     log.debug('EXEC_OP')
     local tuple = box.space.operations:update(
@@ -257,7 +257,7 @@ function execute_operation(operation_id)
         self[operation](self, unpack(args))
     end)
     if not status then
-        log.error('failed to %s in space %s: %s', operation, 
+        log.error('failed to %s in space %s: %s', operation,
               space, reason)
     end
     box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
@@ -345,6 +345,27 @@ local function check_operation(space, operation_id, tuple_id)
     return false
 end
 
+local function next_id(space)
+    local server_id = self_server.id
+    local s = box.space[space]
+    if s == nil then
+        box.error(box.error.NO_SUCH_SPACE, tostring(space))
+    end
+    if s.index[0].parts[1].type == 'STR' then
+        return uuid.str()
+    end
+    local key = s.name .. '_max_id'
+    local _schema = box.space._schema
+    local tuple = _schema:get{key}
+    if tuple == nil then
+        tuple = _schema:insert{key, server_id}
+    else
+        local next_id = tuple[2] + server_i
+        tuple = _schema:update({key}, {{'=', 2, next_id}})
+    end
+    return tuple[2]
+end
+
 -- default request wrappers for db operations
 local function insert(space, data)
     tuple_id = data[1]
@@ -352,7 +373,9 @@ local function insert(space, data)
 end
 
 local function auto_increment(space, data)
-    return request(space, 'insert', uuid.str(), data)
+    local id = next_id(space)
+    table.insert(data, 1, id)
+    return request(space, 'insert', id, data)
 end
 
 local function select(space, tuple_id)
@@ -378,7 +401,9 @@ local function q_insert(space, operation_id, data)
 end
 
 local function q_auto_increment(space, operation_id, data)
-    return queue_request(space, 'insert', operation_id, uuid.str(), data)
+    local id = next_id(space)
+    table.insert(data, 1, id)
+    return queue_request(space, 'insert', operation_id, id, data)
 end
 
 local function q_replace(space, operation_id, data)
@@ -403,9 +428,10 @@ end
 local function init(cfg, callback)
     log.info('establishing connection to cluster servers...')
     servers = {}
+
     -- math.randomseed(os.time())
     local zones = {}
-    for _, server in pairs(cfg.servers) do
+    for id, server in pairs(cfg.servers) do
         local conn
         log.info(' - %s - connecting...', server.uri)
         while true do
@@ -420,14 +446,16 @@ local function init(cfg, callback)
                     zones[server.zone] = zone
                     table.insert(servers, zone)
                 end
-                local srv = { 
+                local srv = {
                     uri = server.uri, conn = conn,
-                    login=cfg.login, password=cfg.password
+                    login=cfg.login, password=cfg.password,
+                    id = id
                 }
                 if callback ~= nil then
                     callback(srv)
                 end
-                if srv.uri == cfg.my_uri then
+                if conn:eval("return box.info.server.uuid") ==
+                            box.info.server.uuid then
                     self_server = srv
                 end
                 table.insert(zone, srv)
@@ -443,7 +471,7 @@ local function init(cfg, callback)
     redundancy = cfg.redundancy or #servers
     servers_n = #servers
     log.info("redundancy = %d", redundancy)
-    
+
     -- run monitoring and heartbeat fibers by default
     if cfg.monitor == nil or cfg.monitor then
         fiber.create(heartbeat_fiber)
@@ -469,10 +497,10 @@ local shard_obj = {
     DEAD_TIMEOUT = DEAD_TIMEOUT,
     RECONNECT_AFTER = RECONNECT_AFTER,
     WORKERS = WORKERS,
-    servers = servers, 
+    servers = servers,
     len = len,
     redundancy = redundancy,
-    
+
     shard = shard,
     random_shard = random_shard,
     single_call = single_call,
@@ -487,7 +515,7 @@ local shard_obj = {
     update = update,
     delete = delete,
     q_insert = q_insert,
-    q_insert = q_auto_increment,
+    q_auto_increment = q_auto_increment,
     q_replace = q_replace,
     q_update = q_update,
     q_delete = q_delete,
@@ -498,6 +526,9 @@ local shard_obj = {
 setmetatable(shard_obj, {
     __index = function(self, space)
         return {
+            auto_increment = function(...)
+                return self.auto_increment(space, ...)
+            end,
             insert = function(...)
                 return self.insert(space, ...)
             end,
@@ -513,7 +544,10 @@ setmetatable(shard_obj, {
             update = function(...)
                 return self.update(space, ...)
             end,
-            
+
+            q_auto_increment = function(...)
+                return self.q_auto_increment(space, ...)
+            end,
             q_insert = function(...)
                 return self.q_insert(space, ...)
             end,
