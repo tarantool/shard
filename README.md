@@ -48,6 +48,14 @@ yum
 $sudo yum install tarantool-shard
 ```
 
+Test
+----
+Sharding module can be tested with [tarantool functional testing framework](https://github.com/tarantool/test-run):
+```bash
+pip install -r test-run/requirement.txt
+python test/test-run.py
+```
+
 Example
 -------
 ```lua
