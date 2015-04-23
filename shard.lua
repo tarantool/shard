@@ -398,20 +398,20 @@ end
 local function q_insert(space, operation_id, data)
     tuple_id = data[1]
     queue_request(space, 'insert', operation_id, tuple_id, data)
-    return data
+    return box.tuple.new(data)
 end
 
 local function q_auto_increment(space, operation_id, data)
     local id = next_id(space)
     table.insert(data, 1, id)
     queue_request(space, 'insert', operation_id, id, data)
-    return data
+    return box.tuple.new(data)
 end
 
 local function q_replace(space, operation_id, data)
     tuple_id = data[1]
     queue_request(space, 'replace', operation_id, tuple_id, data)
-    return data
+    return box.tuple.new(data)
 end
 
 local function q_delete(space, operation_id, tuple_id)
