@@ -1,0 +1,131 @@
+wait()
+---
+- true
+...
+wait()
+---
+- true
+...
+wait()
+---
+- true
+...
+shard.shard(10)[1].uri
+---
+- localhost:33132
+...
+shard.shard("10")[1].id
+---
+- 3
+...
+print_shard_map()
+---
+- - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+...
+shard.demo.insert({0, 'test'})
+---
+- 0: [0, 'test']
+  1: [0, 'test']
+...
+shard.demo.replace({0, 'test2'})
+---
+- 0: [0, 'test2']
+  1: [0, 'test2']
+...
+shard.demo.update(0, {{'=', 2, 'test3'}})
+---
+- 0: [0, 'test3']
+...
+shard.demo.auto_increment{'test3'}
+---
+- 0: [1, 'test3']
+  1: [1, 'test3']
+...
+shard.demo.auto_increment{'test4'}
+---
+- 0: [2, 'test4']
+  1: [2, 'test4']
+...
+box.space.demo:select()
+---
+- - [0, 'test3']
+  - [2, 'test4']
+...
+shard.demo.q_insert(1, {0, 'test'})
+---
+- [0, 'test']
+...
+shard.demo.q_replace(2, {0, 'test2'})
+---
+- [0, 'test2']
+...
+shard.demo.q_update(3, 0, {{'=', 2, 'test3'}})
+---
+...
+shard.demo.q_auto_increment(4, {'test3'})
+---
+- [3, 'test3']
+...
+shard.demo.q_auto_increment('5', {'test4'})
+---
+- [4, 'test4']
+...
+wait()
+---
+- true
+...
+box.space.demo:select()
+---
+- - [0, 'test3']
+  - [2, 'test4']
+  - [3, 'test3']
+  - [4, 'test4']
+...
+wait()
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test3']
+...
+wait()
+---
+- true
+...
+box.space.demo:select()
+---
+- - [0, 'test3']
+  - [1, 'test3']
+  - [2, 'test4']
+  - [3, 'test3']
+  - [4, 'test4']
+...
+shard.demo.check_operation(1, 0)
+---
+- true
+...
+shard.demo.check_operation('12345', 0)
+---
+- false
+...
