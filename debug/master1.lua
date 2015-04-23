@@ -39,13 +39,14 @@ end
 shard.init(cfg)
 
 -- do inser, replace, update operations
-shard.demo.q_insert(1, {1, 'second', 'third'})
-shard.demo.q_insert(2, {2, 'second'})
-shard.demo.q_insert(3, {3, 'test'})
-shard.demo.q_replace(4, {3, 'test2'})
-shard.demo.q_update(5, 3, {{'=', 2, 'test3'}})
+shard.demo.q_auto_increment(1, {'second', 'third'})
+shard.demo.q_auto_increment(2, {'second'})
+test_id = shard.demo.q_auto_increment(3, {'test'})[1]
+shard.demo.q_replace(4, {test_id, 'test2'})
+shard.demo.q_update(5, test_id, {{'=', 2, 'test3'}})
+shard.demo.q_auto_increment(6, {'test_incr'})
 
 -- wait and show results
 require('fiber').sleep(3)
 log.info(yaml.encode(box.space.demo:select{}))
-log.info(yaml.encode(shard.demo.check_operation(1, 1)))
+log.info(yaml.encode(shard.demo.check_operation(4, test_id)))

@@ -397,18 +397,21 @@ end
 
 local function q_insert(space, operation_id, data)
     tuple_id = data[1]
-    return queue_request(space, 'insert', operation_id, tuple_id, data)
+    queue_request(space, 'insert', operation_id, tuple_id, data)
+    return data
 end
 
 local function q_auto_increment(space, operation_id, data)
     local id = next_id(space)
     table.insert(data, 1, id)
-    return queue_request(space, 'insert', operation_id, id, data)
+    queue_request(space, 'insert', operation_id, id, data)
+    return data
 end
 
 local function q_replace(space, operation_id, data)
     tuple_id = data[1]
-    return queue_request(space, 'replace', operation_id, tuple_id, data)
+    queue_request(space, 'replace', operation_id, tuple_id, data)
+    return data
 end
 
 local function q_delete(space, operation_id, tuple_id)
@@ -477,7 +480,6 @@ local function init(cfg, callback)
         fiber.create(heartbeat_fiber)
         fiber.create(monitor_fiber)
     end
-    q = queue(push_operation, WORKERS)
     log.info('started')
     return true
 end
