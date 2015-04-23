@@ -236,9 +236,11 @@ end
 
 -- shards request function
 local function request(space, operation, tuple_id, ...)
-    result = {}
+    local result = {}
+    k = 0
     for i, server in ipairs(shard(tuple_id)) do
-        result[i] = single_call(space, server, operation, ...)
+        result[k] = single_call(space, server, operation, ...)
+        k = k + 1
     end
     return result
 end
@@ -322,7 +324,7 @@ local function check_operation(space, operation_id, tuple_id)
                     'find_operation', operation_id
                 )[1][1]
             end)
-            if not status then
+            if not status or task_status == nil then
                 -- wait until transaction will be queued on all hosts
                 failed = server.uri
                 break
@@ -337,6 +339,10 @@ local function check_operation(space, operation_id, tuple_id)
                 q:join()
             end
             return true
+        end
+        -- operation does not exist
+        if task_status == nil then
+            break
         end
         log.debug('FAIL')
         fiber.sleep(delay)
