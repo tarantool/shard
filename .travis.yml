@@ -1,0 +1,19 @@
+language: python
+python:
+  - "2.7"
+
+before_install:
+  - git submodule update --init --recursive
+
+before_script:
+  - uname -a
+  - lsb_release -c -s
+  - curl http://tarantool.org/dist/public.key | sudo apt-key add -
+  - echo "deb http://tarantool.org/dist/master/ubuntu/ `lsb_release -c -s` main" | sudo tee -a /etc/apt/sources.list.d/tarantool.list
+  - sudo apt-get update > /dev/null
+  - sudo apt-get -q install tarantool tarantool-dev
+
+script:
+  - pip install -r test-run/requirements.txt
+  - pip install git+https://github.com/tarantool/tarantool-python.git
+  - python test/test-run.py --force
