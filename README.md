@@ -1,5 +1,6 @@
 Tarantool sharding module
 =========================
+[![Tests status](https://travis-ci.org/tarantool/shard.svg?branch=master)](https://travis-ci.org/tarantool/shard)
 
 Shading lua module for [tarantool 1.6](http://tarantool.org) with direct and queued operations. API:
 * init - connect to all shards
