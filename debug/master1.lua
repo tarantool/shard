@@ -46,6 +46,13 @@ shard.demo.q_replace(4, {test_id, 'test2'})
 shard.demo.q_update(5, test_id, {{'=', 2, 'test3'}})
 shard.demo.q_auto_increment(6, {'test_incr'})
 
+--batching
+q = shard.q_begin()
+shard.demo.q_auto_increment(7, {'batch1'})
+shard.demo.q_auto_increment(8, {'batch2'})
+shard.demo.q_auto_increment(9, {'batch3'})
+shard.q_end(q)
+
 -- wait and show results
 require('fiber').sleep(3)
 log.info(yaml.encode(box.space.demo:select{}))

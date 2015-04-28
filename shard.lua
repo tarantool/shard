@@ -25,6 +25,7 @@ local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
 
+
 --queue implementation
 local function queue_handler(self, fun)
     fiber.name('queue/handler')
@@ -248,21 +249,27 @@ end
 -- execute operation, call from remote node
 function execute_operation(operation_id)
     log.debug('EXEC_OP')
+    -- execute batch
+    box.begin()
     local tuple = box.space.operations:update(
         operation_id, {{'=', 2, STATE_INPROGRESS}}
     )
-    local space = tuple[3]
-    local operation = tuple[4]
-    local args = tuple[5]
-    local status, reason = pcall(function()
-        local self = box.space[space]
-        self[operation](self, unpack(args))
-    end)
-    if not status then
-        log.error('failed to %s in space %s: %s', operation,
-              space, reason)
+    local batch = tuple[3]
+    for _, operation in ipairs(batch) do    
+        local space = operation[1]
+        local func_name = operation[2]
+        local args = operation[3]
+        local status, reason = pcall(function()
+            local self = box.space[space]
+            self[func_name](self, unpack(args))
+        end)
+        if not status then
+            log.error('failed to %s in space %s: %s', operation,
+                  space, reason)
+        end
     end
     box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
+    box.commit()
 end
 
 -- process operation in queue
@@ -282,18 +289,23 @@ local function ack_operation(task)
     )
 end
 
--- fast request with queue
-local function queue_request(space, operation, operation_id, tuple_id, ...)
-    -- queued push operation in shards
-    operation_id = tostring(operation_id)
-	q = queue(push_operation, WORKERS)
-    for _, server in ipairs(shard(tuple_id)) do
+local batch_mode = false
+local batch = {}
+local batch_operation_id
+
+local function q_begin()
+    batch = {}
+    batch_mode = true
+    return queue(push_operation, WORKERS)
+end
+
+local function push_queue(q)
+    --q = queue(push_operation, WORKERS)
+    for server, data in pairs(batch) do
         local tuple = {
-            operation_id;
+            batch_operation_id;
             STATE_NEW;
-            box.space[space].id;
-            operation;
-            {...}
+            data;
         }
         local task = {tuple = tuple, server = server}
         q:put(task)
@@ -301,8 +313,36 @@ local function queue_request(space, operation, operation_id, tuple_id, ...)
     q:join()
     -- all shards ready - start workers
     q = queue(ack_operation, WORKERS)
+    for server, _ in pairs(batch) do
+        q:put({id=batch_operation_id, server=server})
+    end
+    batch = {}
+    batch_mode = false
+end
+
+local function q_end(q)
+    -- check begin/end order
+    if not batch_mode then
+        log.error('Cannot run q_end without q_begin')
+        return
+    end
+    push_queue(q)
+end
+
+-- fast request with queue
+local function queue_request(space, operation, operation_id, tuple_id, ...)
+    -- queued push operation in shards
+    batch_operation_id = tostring(operation_id)
     for _, server in ipairs(shard(tuple_id)) do
-        q:put({id=operation_id, server=server})
+        if batch[server] == nil then
+            batch[server] = {}
+        end
+        local data = { box.space[space].id; operation; {...}; }
+        batch[server][#batch[server] + 1] = data
+    end
+    if not batch_mode then
+        q = queue(push_operation, WORKERS)
+        push_queue(q)
     end
 end
 
@@ -527,6 +567,8 @@ local shard_obj = {
     q_replace = q_replace,
     q_update = q_update,
     q_delete = q_delete,
+    q_begin = q_begin,
+    q_end = q_end,
     check_operation = check_operation,
     get_heartbeat = get_heartbeat,
 }
