@@ -1,0 +1,79 @@
+--# create server master1 with script='lua1/master1.lua', lua_libs='lua1/lua/shard.lua'
+--# create server master2 with script='lua1/master2.lua', lua_libs='lua1/lua/shard.lua'
+--# start server master1
+--# start server master2
+--# set connection default
+wait()
+---
+- true
+...
+-- bipahse operations
+q = shard.q_begin()
+---
+...
+shard.demo.q_insert(1, {0, 'test'})
+---
+- [0, 'test']
+...
+shard.demo.q_replace(2, {0, 'test2'})
+---
+- [0, 'test2']
+...
+shard.demo.q_update(3, 0, {{'=', 2, 'test3'}})
+---
+...
+shard.demo.q_insert(4, {1, 'test4'})
+---
+- [1, 'test4']
+...
+shard.demo.q_insert(5, {2, 'test_to_delete'})
+---
+- [2, 'test_to_delete']
+...
+shard.demo.q_delete(6, 2)
+---
+...
+shard.q_end(q)
+---
+...
+-- check for operation q_insert is in shard
+shard.demo.check_operation(1, 0)
+---
+- false
+...
+-- check for not exists operations
+shard.demo.check_operation('12345', 0)
+---
+- false
+...
+--# set connection default
+wait()
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test4']
+...
+--# set connection master1
+box.space.demo:select()
+---
+- []
+...
+--# set connection master2
+box.space.demo:select()
+---
+- - [0, 'test3']
+...
+--# set connection default
+box.space.operations:select()
+---
+- - ['6', 2, [[512, 'insert', [[1, 'test4']]]]]
+...
+--# stop server master1
+--# stop server master2
+--# cleanup server master1
+--# cleanup server master2
+--# stop server default
+--# start server default
+--# set connection default

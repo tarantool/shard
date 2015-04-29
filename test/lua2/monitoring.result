@@ -1,0 +1,92 @@
+--# create server master1 with script='lua2/master1.lua', lua_libs='lua2/lua/shard.lua'
+--# create server master2 with script='lua2/master2.lua', lua_libs='lua2/lua/shard.lua'
+--# start server master1
+--# start server master2
+--# set connection default
+wait()
+---
+- true
+...
+-- monitoring test
+print_shard_map()
+---
+- - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33132
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+...
+--# set connection master1
+print_shard_map()
+---
+- - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33132
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+...
+--# set connection master2
+print_shard_map()
+---
+- - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33132
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+  - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33132
+  - 0
+...
+--# set connection default
+--# stop server master1
+--# stop server master2
+--# cleanup server master1
+--# cleanup server master2
+--# stop server default
+--# start server default
+--# set connection default

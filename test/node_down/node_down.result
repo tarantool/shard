@@ -1,0 +1,54 @@
+--# create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'
+--# start server master1
+--# set connection default
+wait()
+---
+- true
+...
+-- monitoring test
+print_shard_map()
+---
+- - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+...
+--# set connection master1
+print_shard_map()
+---
+- - localhost:33131
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+  - localhost:33130
+  - localhost:33131
+  - 0
+  - localhost:33130
+  - 0
+...
+--# set connection default
+-- Kill server and wait for monitoring fibers kill
+--# stop server master1
+wait()
+---
+- true
+...
+print_shard_map()
+---
+- - localhost:33130
+  - localhost:33131
+  - 10
+  - localhost:33130
+  - 0
+...
+--# cleanup server master1
+--# stop server default
+--# start server default
+--# set connection default
