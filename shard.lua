@@ -24,6 +24,9 @@ heartbeat_state = {}
 local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
+local init_complete = false
+local epoch_counter = 1
+local configuration = {}
 
 
 --queue implementation
@@ -145,9 +148,23 @@ local function monitor_fiber()
             server.conn:close()
             server.ignore = true
             heartbeat_state[uri] = nil
+            epoch_counter = epoch_counter + 1
         end
         fiber.sleep(math.random(100)/1000)
     end
+end
+
+local function is_ignored(uri)
+    local result = false
+    for _, zone in ipairs(servers) do
+        for _, server in ipairs(zone) do
+            if server.uri == uri and server.ignore then
+                result = true
+                break
+            end
+        end
+    end
+    return result
 end
 
 -- merge node response data with local table by fiber time
@@ -157,9 +174,11 @@ local function merge_tables(response)
     end
     for seen_by_uri, node_table in pairs(response) do
         local node_data = heartbeat_state[seen_by_uri]
+        if not is_ignored(seen_by_uri) then
         if not node_data then
             heartbeat_state[seen_by_uri] = node_table
             node_data = heartbeat_state[seen_by_uri]
+            epoch_counter = epoch_counter + 1
         end
         for uri, data in pairs(node_table) do
             -- update if not data or if we have fresh time
@@ -168,6 +187,7 @@ local function merge_tables(response)
                 log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
                 node_data[uri] = data
             end
+        end
         end
     end
 end
@@ -257,8 +277,6 @@ local function request(space, operation, tuple_id, ...)
     local result = {}
     k = 0
     for i, server in ipairs(shard(tuple_id)) do
-        log.info('REQUEST')
-        log.info(yaml.encode({...}))
         result[k] = single_call(space, server, operation, ...)
         k = k + 1
     end
@@ -492,11 +510,22 @@ local function check_shard(conn)
     return true
 end
 
+local function create_spaces(cfg)
+    if not box.space.operations then
+        local operations = box.schema.create_space('operations')
+        operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
+        operations:create_index('queue', {type = 'tree', parts = {2, 'num', 1, 'str'}})
+    end
+    configuration = cfg
+end
+
+
 -- init shard, connect with servers
 local function init(cfg, callback)
+    create_spaces(cfg)
     log.info('establishing connection to cluster servers...')
     servers = {}
-
+    
     -- math.randomseed(os.time())
     local zones = {}
     for id, server in pairs(cfg.servers) do
@@ -546,6 +575,7 @@ local function init(cfg, callback)
         fiber.create(monitor_fiber)
     end
     log.info('started')
+    init_complete = true
     return true
 end
 
@@ -557,6 +587,47 @@ local function get_heartbeat()
     return heartbeat_state
 end
 
+local function is_connected()
+    return init_complete
+end
+
+local function wait_connection()
+    while not is_connected() do
+        fiber.sleep(0.1)
+    end
+end
+
+local function has_unfinished_operations()
+    local tuple = box.space.operations.index.queue:min()
+    return tuple ~= nil and tuple[2] ~= STATE_HANDLED
+end
+
+local function wait_operations()
+    while has_unfinished_operations() do
+        fiber.sleep(0.1)
+    end
+end
+
+local function get_epoch()
+    return epoch_counter
+end
+
+local function wait_epoch(epoch)
+    while get_epoch() < epoch do
+        fiber.sleep(0.1)
+    end
+end
+
+local function is_table_filled()
+    local result = true
+    for id, server in pairs(configuration.servers) do
+        if heartbeat_state[server.uri] == nil then
+            result = false
+            break
+        end
+    end
+    return result
+end
 
 local shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
@@ -567,6 +638,12 @@ local shard_obj = {
     servers = servers,
     len = len,
     redundancy = redundancy,
+    is_connected = is_connected,
+    wait_connection = wait_connection,
+    wait_operations = wait_operations,
+    get_epoch = get_epoch,
+    wait_epoch = wait_epoch,
+    is_table_filled = is_table_filled,
 
     shard = shard,
     random_shard = random_shard,
