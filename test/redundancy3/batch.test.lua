@@ -1,64 +1,43 @@
---# create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'
+--# create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'
+--# create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'
 --# start server master1
+--# start server master2
 --# set connection default
 shard.wait_connection()
----
-...
+
 -- bipahse operations
 q = shard.q_begin()
----
-...
 shard.demo.q_insert(1, {0, 'test'})
----
-- [0, 'test']
-...
 shard.demo.q_replace(2, {0, 'test2'})
----
-- [0, 'test2']
-...
 shard.demo.q_update(3, 0, {{'=', 2, 'test3'}})
----
-...
 shard.demo.q_insert(4, {1, 'test4'})
----
-- [1, 'test4']
-...
 shard.demo.q_insert(5, {2, 'test_to_delete'})
----
-- [2, 'test_to_delete']
-...
 shard.demo.q_delete(6, 2)
----
-...
 shard.q_end(q)
----
-...
---# stop server master1
+
 -- check for operation q_insert is in shard
 shard.demo.check_operation(1, 0)
----
-- false
-...
 -- check for not exists operations
 shard.demo.check_operation('12345', 0)
----
-- false
-...
+
+
+--# set connection default
 shard.wait_operations()
----
-...
 box.space.demo:select()
----
-- - [0, 'test3']
-  - [1, 'test4']
-...
+--# set connection master1
+shard.wait_operations()
+box.space.demo:select()
+--# set connection master2
+shard.wait_operations()
+box.space.demo:select()
+--# set connection default
+
 box.space.operations:select()
----
-- - ['6', 2, [[512, 'insert', [[0, 'test']]], [512, 'replace', [[0, 'test2']]], [
-        512, 'update', [0, [['=', 2, 'test3']]]], [512, 'insert', [[1, 'test4']]],
-      [512, 'insert', [[2, 'test_to_delete']]], [512, 'delete', [2]]]]
-...
+
+--# stop server master1
+--# stop server master2
 --# cleanup server master1
+--# cleanup server master2
 --# stop server default
 --# start server default
 --# set connection default

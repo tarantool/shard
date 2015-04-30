@@ -12,7 +12,6 @@ local cfg = {
     password = 'pass';
     redundancy = 2;
     binary = 33130;
-    my_uri = 'localhost:33130'
 }
 
 box.cfg {
@@ -32,9 +31,6 @@ if not box.space.demo then
 	
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
-
-    local operations = box.schema.create_space('operations')
-    operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
 
 function print_shard_map()
@@ -48,12 +44,6 @@ function print_shard_map()
     end
     return result
 end
-
-function wait()
-    fiber.sleep(15)
-    return true
-end
-
 
 -- init shards
 fiber.create(function()

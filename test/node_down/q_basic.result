@@ -1,9 +1,8 @@
 --# create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'
 --# start server master1
 --# set connection default
-wait()
+shard.wait_connection()
 ---
-- true
 ...
 -- bipahse operations
 shard.demo.q_insert(1, {0, 'test'})
@@ -39,9 +38,8 @@ shard.demo.check_operation('12345', 0)
 ---
 - false
 ...
-wait()
+shard.wait_operations()
 ---
-- true
 ...
 box.space.demo:select()
 ---

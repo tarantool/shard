@@ -7,11 +7,12 @@ local cfg = {
     servers = {
         { uri = 'localhost:33130', zone = '0' };
         { uri = 'localhost:33131', zone = '1' };
+        { uri = 'localhost:33132', zone = '2' };
     };
     login = 'tester';
     password = 'pass';
-    redundancy = 2;
-    binary = 33131;
+    redundancy = 3;
+    binary = 33132;
 }
 
 box.cfg {
@@ -20,7 +21,7 @@ box.cfg {
     listen = cfg.binary;
     pid_file  = "tarantool.pid";
     logger  = "tarantool.log";
-    custom_proc_title  = "master1";
+    custom_proc_title  = "master2";
 }
 
 require('console').listen(os.getenv('ADMIN'))
@@ -49,3 +50,4 @@ end
 fiber.create(function()
     shard.init(cfg)
 end)
+

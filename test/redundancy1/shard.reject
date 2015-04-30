@@ -1,0 +1,1 @@
+--# create server master1 with script='lua/master1.lua', lua_libs='lua/lua/shard.lua'

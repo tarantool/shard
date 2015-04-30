@@ -7,10 +7,11 @@ local cfg = {
     servers = {
         { uri = 'localhost:33130', zone = '0' };
         { uri = 'localhost:33131', zone = '1' };
+        { uri = 'localhost:33132', zone = '2' };
     };
     login = 'tester';
     password = 'pass';
-    redundancy = 2;
+    redundancy = 3;
     binary = 33131;
 }
 

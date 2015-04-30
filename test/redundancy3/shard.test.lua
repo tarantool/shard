@@ -1,0 +1,20 @@
+--# create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'
+--# create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'
+--# start server master1
+--# start server master2
+--# set connection default
+shard.wait_connection()
+
+-- num keys
+shard.shard(0)[1].uri
+
+-- str keys
+shard.shard('abc')[1].uri
+
+--# stop server master1
+--# stop server master2
+--# cleanup server master1
+--# cleanup server master2
+--# stop server default
+--# start server default
+--# set connection default
