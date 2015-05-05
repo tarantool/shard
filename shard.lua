@@ -456,7 +456,7 @@ local function auto_increment(self, space, data)
     return request(self, space, 'insert', id, data)
 end
 
-local function select(space, tuple_id)
+local function select(self, space, tuple_id)
     return request(self, space, 'select', tuple_id, tuple_id)
 end
 
@@ -676,7 +676,6 @@ local shard_obj = {
     is_table_filled = is_table_filled,
 
     shard = shard,
-    random_shard = random_shard,
     single_call = single_call,
     request = request,
     queue_request = queue_request,
