@@ -31,27 +31,25 @@ if not box.space.demo then
 
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
-    local operations = box.schema.create_space('operations')
-    operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
 
 -- init shards
 shard.init(cfg)
 
 -- do inser, replace, update operations
-shard.demo.q_auto_increment(1, {'second', 'third'})
-shard.demo.q_auto_increment(2, {'second'})
-test_id = shard.demo.q_auto_increment(3, {'test'})[1]
-shard.demo.q_replace(4, {test_id, 'test2'})
-shard.demo.q_update(5, test_id, {{'=', 2, 'test3'}})
-shard.demo.q_auto_increment(6, {'test_incr'})
+shard.demo:q_auto_increment(1, {'second', 'third'})
+shard.demo:q_auto_increment(2, {'second'})
+test_id = shard.demo:q_auto_increment(3, {'test'})[1]
+shard.demo:q_replace(4, {test_id, 'test2'})
+shard.demo:q_update(5, test_id, {{'=', 2, 'test3'}})
+shard.demo:q_auto_increment(6, {'test_incr'})
 
 --batching
-q = shard.q_begin()
-shard.demo.q_auto_increment(7, {'batch1'})
-shard.demo.q_auto_increment(8, {'batch2'})
-shard.demo.q_auto_increment(9, {'batch3'})
-shard.q_end(q)
+batch = shard.q_begin()
+batch.demo:q_auto_increment(7, {'batch1'})
+batch.demo:q_auto_increment(8, {'batch2'})
+batch.demo:q_auto_increment(9, {'batch3'})
+batch:q_end()
 
 -- wait and show results
 require('fiber').sleep(3)

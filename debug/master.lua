@@ -30,9 +30,6 @@ if not box.space.demo then
 	
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
-
-    local operations = box.schema.create_space('operations')
-    operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
 end
 
 -- init shards

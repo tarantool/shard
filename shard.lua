@@ -14,7 +14,6 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
-local WORKERS = 10
 local RECONNECT_AFTER = msgpack.NULL
 
 local self_server
@@ -24,6 +23,7 @@ heartbeat_state = {}
 local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
+
 local init_complete = false
 local epoch_counter = 1
 local configuration = {}
@@ -175,19 +175,19 @@ local function merge_tables(response)
     for seen_by_uri, node_table in pairs(response) do
         local node_data = heartbeat_state[seen_by_uri]
         if not is_ignored(seen_by_uri) then
-        if not node_data then
-            heartbeat_state[seen_by_uri] = node_table
-            node_data = heartbeat_state[seen_by_uri]
-            epoch_counter = epoch_counter + 1
-        end
-        for uri, data in pairs(node_table) do
-            -- update if not data or if we have fresh time
-            local empty_row = not node_data[uri] or not node_data[uri].ts
-            if empty_row or data.ts > node_data[uri].ts then
-                log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
-                node_data[uri] = data
+            if not node_data then
+                heartbeat_state[seen_by_uri] = node_table
+                node_data = heartbeat_state[seen_by_uri]
+                epoch_counter = epoch_counter + 1
             end
-        end
+            for uri, data in pairs(node_table) do
+                -- update if not data or if we have fresh time
+                local empty_row = not node_data[uri] or not node_data[uri].ts
+                if empty_row or data.ts > node_data[uri].ts then
+                    log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
+                    node_data[uri] = data
+                end
+            end
         end
     end
 end
@@ -256,7 +256,7 @@ function deepcopy(orig)
     return copy
 end
 
-local function single_call(space, server, operation, ...)
+local function single_call(self, space, server, operation, ...)
     result = nil
     local status, reason = pcall(function(...)
         local args = deepcopy({...})
@@ -273,11 +273,11 @@ local function single_call(space, server, operation, ...)
 end
 
 -- shards request function
-local function request(space, operation, tuple_id, ...)
+local function request(self, space, operation, tuple_id, ...)
     local result = {}
     k = 0
     for i, server in ipairs(shard(tuple_id)) do
-        result[k] = single_call(space, server, operation, ...)
+        result[k] = single_call(self, space, server, operation, ...)
         k = k + 1
     end
     return result
@@ -296,14 +296,8 @@ function execute_operation(operation_id)
         local space = operation[1]
         local func_name = operation[2]
         local args = operation[3]
-        local status, reason = pcall(function()
-            local self = box.space[space]
-            self[func_name](self, unpack(args))
-        end)
-        if not status then
-            log.error('failed to %s in space %s: %s', operation,
-                  space, reason)
-        end
+        local self = box.space[space]
+        self[func_name](self, unpack(args))
     end
     box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
     box.commit()
@@ -326,50 +320,47 @@ local function ack_operation(task)
     )
 end
 
-local batch_mode = false
-local batch = {}
-local batch_operation_id
-
-local function q_begin()
-    batch = {}
-    batch_mode = true
-    return queue(push_operation, WORKERS)
-end
-
-local function push_queue(q)
-    --q = queue(push_operation, WORKERS)
-    for server, data in pairs(batch) do
+local function push_queue(obj)
+    for server, data in pairs(obj.batch) do
         local tuple = {
-            batch_operation_id;
+            obj.batch_operation_id;
             STATE_NEW;
             data;
         }
         local task = {tuple = tuple, server = server}
-        q:put(task)
+        obj.q:put(task)
     end
-    q:join()
+    obj.q:join()
     -- all shards ready - start workers
-    q = queue(ack_operation, WORKERS)
-    for server, _ in pairs(batch) do
-        q:put({id=batch_operation_id, server=server})
+    obj.q = queue(ack_operation, redundancy)
+    for server, _ in pairs(obj.batch) do
+        obj.q:put({id=obj.batch_operation_id, server=server})
     end
-    batch = {}
-    batch_mode = false
+    obj.batch = {}
+    obj.batch_mode = false
 end
 
-local function q_end(q)
+local function q_end(self)
     -- check begin/end order
-    if not batch_mode then
+    if not self.batch_mode then
         log.error('Cannot run q_end without q_begin')
         return
     end
-    push_queue(q)
+    push_queue(self)
 end
 
 -- fast request with queue
-local function queue_request(space, operation, operation_id, tuple_id, ...)
+local function queue_request(self, space, operation, operation_id, tuple_id, ...)
     -- queued push operation in shards
-    batch_operation_id = tostring(operation_id)
+    local batch
+    local batch_mode = type(self.q_end) == 'function'
+    if batch_mode then
+        batch = self.batch
+        self.batch_operation_id = tostring(operation_id)
+    else
+        batch = {}
+    end
+
     for _, server in ipairs(shard(tuple_id)) do
         if batch[server] == nil then
             batch[server] = {}
@@ -378,8 +369,12 @@ local function queue_request(space, operation, operation_id, tuple_id, ...)
         batch[server][#batch[server] + 1] = data
     end
     if not batch_mode then
-        q = queue(push_operation, WORKERS)
-        push_queue(q)
+        local obj = {
+            q = queue(push_operation, redundancy),
+            batch_operation_id = tostring(operation_id),
+            batch = batch,
+        }
+        push_queue(obj)
     end
 end
 
@@ -388,7 +383,7 @@ function find_operation(id)
     return box.space.operations:get(id)[2]
 end
 
-local function check_operation(space, operation_id, tuple_id)
+local function check_operation(self, space, operation_id, tuple_id)
     local delay = 0.001
     operation_id = tostring(operation_id)
     for i=1,100 do
@@ -409,7 +404,7 @@ local function check_operation(space, operation_id, tuple_id)
         end
         if failed == nil then
             if task_status == STATE_INPROGRESS then
-                q = queue(ack_operation, WORKERS)
+                q = queue(ack_operation, redundancy)
                 for _, server in ipairs(shard(tuple_id)) do
                     q:put({id=operation_id, server=server})
                 end
@@ -450,64 +445,100 @@ local function next_id(space)
 end
 
 -- default request wrappers for db operations
-local function insert(space, data)
+local function insert(self, space, data)
     tuple_id = data[1]
-    return request(space, 'insert', tuple_id, data)
+    return request(self, space, 'insert', tuple_id, data)
 end
 
-local function auto_increment(space, data)
+local function auto_increment(self, space, data)
     local id = next_id(space)
     table.insert(data, 1, id)
-    return request(space, 'insert', id, data)
+    return request(self, space, 'insert', id, data)
 end
 
 local function select(space, tuple_id)
-    return request(space, 'select', tuple_id, tuple_id)
+    return request(self, space, 'select', tuple_id, tuple_id)
 end
 
-local function replace(space, data)
+local function replace(self, space, data)
     tuple_id = data[1]
-    return request(space, 'replace', tuple_id, data)
+    return request(self, space, 'replace', tuple_id, data)
 end
 
-local function delete(space, tuple_id)
-    return request(space, 'delete', tuple_id, tuple_id)
+local function delete(self, space, tuple_id)
+    return request(self, space, 'delete', tuple_id, tuple_id)
 end
 
-local function update(space, key, data)
-    return request(space, 'update', key, key, data)
+local function update(self, space, key, data)
+    return request(self, space, 'update', key, key, data)
 end
 
-local function q_insert(space, operation_id, data)
+local function q_insert(self, space, operation_id, data)
     tuple_id = data[1]
-    queue_request(space, 'insert', operation_id, tuple_id, data)
+    queue_request(self, space, 'insert', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
 
-local function q_auto_increment(space, operation_id, data)
+local function q_auto_increment(self, space, operation_id, data)
     local id = next_id(space)
     table.insert(data, 1, id)
-    queue_request(space, 'insert', operation_id, id, data)
+    queue_request(self, space, 'insert', operation_id, id, data)
     return box.tuple.new(data)
 end
 
-local function q_replace(space, operation_id, data)
+local function q_replace(self, space, operation_id, data)
     tuple_id = data[1]
-    queue_request(space, 'replace', operation_id, tuple_id, data)
+    queue_request(self, space, 'replace', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
 
-local function q_delete(space, operation_id, tuple_id)
-    return queue_request(space, 'delete', operation_id, tuple_id, tuple_id)
+local function q_delete(self, space, operation_id, tuple_id)
+    return queue_request(self, space, 'delete', operation_id, tuple_id, tuple_id)
 end
 
-local function q_update(space, operation_id, key, data)
-    return queue_request(space, 'update', operation_id, key, key, data)
+local function q_update(self, space, operation_id, key, data)
+    return queue_request(self, space, 'update', operation_id, key, key, data)
 end
 
 -- function for shard checking after init
 local function check_shard(conn)
     return true
+end
+
+local function q_begin()
+    local batch_obj = {
+        batch = {},
+        q = queue(push_operation, redundancy),
+        batch_mode = true,
+        q_insert = q_insert,
+        q_auto_increment = q_auto_increment,
+        q_replace = q_replace,
+        q_update = q_update,
+        q_delete = q_delete,
+        q_end = q_end,
+    }
+    setmetatable(batch_obj, {
+        __index = function (self, space)
+            return {
+                q_auto_increment = function(this, ...)
+                    return self.q_auto_increment(self, space, ...)
+                end,
+                q_insert = function(this, ...)
+                    return self.q_insert(self, space, ...)
+                end,
+                q_replace = function(this, ...)
+                    return self.q_replace(self, space, ...)
+                end,
+                q_delete = function(this, ...)
+                    return self.q_delete(self, space, ...)
+                end,
+                q_update = function(this, ...)
+                    return self.q_update(self, space, ...)
+                end
+        }
+    end
+    })
+    return batch_obj
 end
 
 local function create_spaces(cfg)
@@ -634,7 +665,6 @@ local shard_obj = {
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
     DEAD_TIMEOUT = DEAD_TIMEOUT,
     RECONNECT_AFTER = RECONNECT_AFTER,
-    WORKERS = WORKERS,
     servers = servers,
     len = len,
     redundancy = redundancy,
@@ -664,55 +694,56 @@ local shard_obj = {
     q_update = q_update,
     q_delete = q_delete,
     q_begin = q_begin,
-    q_end = q_end,
     check_operation = check_operation,
     get_heartbeat = get_heartbeat,
 }
 
+
+
 setmetatable(shard_obj, {
-    __index = function(self, space)
+    __index = function (self, space)
         return {
-            auto_increment = function(...)
-                return self.auto_increment(space, ...)
+            auto_increment = function(this, ...)
+                return self.auto_increment(self, space, ...)
             end,
-            insert = function(...)
-                return self.insert(space, ...)
+            insert = function(this, ...)
+                return self.insert(self, space, ...)
             end,
-            select = function(...)
-                return self.select(space, ...)
+            select = function(this, ...)
+                return self.select(self, space, ...)
             end,
-            replace = function(...)
-                return self.replace(space, ...)
+            replace = function(this, ...)
+                return self.replace(self, space, ...)
             end,
-            delete = function(...)
-                return self.delete(space, ...)
+            delete = function(this, ...)
+                return self.delete(self, space, ...)
             end,
-            update = function(...)
-                return self.update(space, ...)
-            end,
-
-            q_auto_increment = function(...)
-                return self.q_auto_increment(space, ...)
-            end,
-            q_insert = function(...)
-                return self.q_insert(space, ...)
-            end,
-            q_replace = function(...)
-                return self.q_replace(space, ...)
-            end,
-            q_delete = function(...)
-                return self.q_delete(space, ...)
-            end,
-            q_update = function(...)
-                return self.q_update(space, ...)
-            end,
-            check_operation = function(...)
-                return self.check_operation(space, ...)
+            update = function(this, ...)
+                return self.update(self, space, ...)
             end,
 
-            single_call = function(...)
-                return self.single_call(space, ...)
-            end
+            q_auto_increment = function(this, ...)
+                return self.q_auto_increment(self, space, ...)
+            end,
+            q_insert = function(this, ...)
+                return self.q_insert(self, space, ...)
+            end,
+            q_replace = function(this, ...)
+                return self.q_replace(self, space, ...)
+            end,
+            q_delete = function(this, ...)
+                return self.q_delete(self, space, ...)
+            end,
+            q_update = function(this, ...)
+                return self.q_update(self, space, ...)
+            end,
+            check_operation = function(this, ...)
+                return self.check_operation(self, space, ...)
+            end,
+
+            single_call = function(this, ...)
+                return self.single_call(self, space, ...)
+           end
         }
     end
 })
