@@ -275,7 +275,7 @@ end
 -- shards request function
 local function request(self, space, operation, tuple_id, ...)
     local result = {}
-    k = 0
+    k = 1
     for i, server in ipairs(shard(tuple_id)) do
         result[k] = single_call(self, space, server, operation, ...)
         k = k + 1
@@ -336,6 +336,9 @@ local function push_queue(obj)
     for server, _ in pairs(obj.batch) do
         obj.q:put({id=obj.batch_operation_id, server=server})
     end
+    -- fix for memory leaks
+    obj.q:join()
+
     obj.batch = {}
     obj.batch_mode = false
 end
