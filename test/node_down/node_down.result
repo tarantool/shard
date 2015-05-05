@@ -16,6 +16,10 @@ shard.is_table_filled()
 shard.wait_epoch(3)
 ---
 ...
+shard.is_table_filled()
+---
+- false
+...
 --# cleanup server master1
 --# stop server default
 --# start server default

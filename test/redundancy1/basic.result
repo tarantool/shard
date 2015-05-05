@@ -6,27 +6,27 @@
 shard.wait_connection()
 ---
 ...
-shard.demo.insert{1, 'test'}
+shard.demo:insert{1, 'test'}
 ---
 - 0: [1, 'test']
 ...
-shard.demo.replace{1, 'test2'}
+shard.demo:replace{1, 'test2'}
 ---
 - 0: [1, 'test2']
 ...
-shard.demo.update(1, {{'=', 2, 'test3'}})
+shard.demo:update(1, {{'=', 2, 'test3'}})
 ---
 - 0: [1, 'test3']
 ...
-shard.demo.insert{2, 'test4'}
+shard.demo:insert{2, 'test4'}
 ---
 - 0: [2, 'test4']
 ...
-shard.demo.insert{3, 'test5'}
+shard.demo:insert{3, 'test5'}
 ---
 - 0: [3, 'test5']
 ...
-shard.demo.delete(3)
+shard.demo:delete(3)
 ---
 - 0: [3, 'test5']
 ...
