@@ -677,6 +677,7 @@ local shard_obj = {
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
     is_table_filled = is_table_filled,
+    queue = queue,
 
     shard = shard,
     single_call = single_call,
