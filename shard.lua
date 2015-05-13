@@ -7,17 +7,19 @@ local msgpack = require('msgpack')
 local remote = require('net.box')
 local yaml = require('yaml')
 local uuid = require('uuid')
+local json = require('json')
 
-local servers = {}
-local servers_n
+local shards = {}
+local shards_n
 local redundancy = 3
+
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
+local INFINITY_MIN = -1
 local RECONNECT_AFTER = msgpack.NULL
 
 local self_server
-
 heartbeat_state = {}
 
 local STATE_NEW = 0
@@ -27,17 +29,18 @@ local STATE_HANDLED = 2
 local init_complete = false
 local epoch_counter = 1
 local configuration = {}
+local shard_obj
 
 
 --queue implementation
 local function queue_handler(self, fun)
     fiber.name('queue/handler')
     while true do
-        local args = self.ch:get()
-        if not args then
+        local task = self.ch:get()
+        if not task then
             break
         end
-        local status, reason = pcall(fun, args)
+        local status, reason = pcall(fun, task)
         if not status then
             if not self.error then
                 self.error = reason
@@ -45,6 +48,9 @@ local function queue_handler(self, fun)
                 self.ch:close()
             else
                 self.error = self.error.."\n"..reason
+            end
+            if task.server then
+                self.error = task.server.uri..": "..self.error
             end
             break
         end
@@ -55,7 +61,7 @@ end
 local queue_mt
 local function queue(fun, workers)
     -- Start fiber queue to processes transactions in parallel
-    local channel_size = math.min(workers, 1000)
+    local channel_size = math.min(workers, redundancy)
     local ch = fiber.channel(workers)
     local chj = fiber.channel(workers)
     local self = setmetatable({ ch = ch, chj = chj, workers = workers }, queue_mt)
@@ -100,21 +106,29 @@ function heartbeat()
     return heartbeat_state
 end
 
+local function server_is_ok(srv)
+    return not srv.ignore and srv.conn:is_connected()
+end
+
 -- main shards search function
-local function shard(key, dead)
-    local num = digest.crc32(key)
-    local shards = {}
+local function shard(key, include_dead)
+    local num
+    if type(key) == 'number' then
+        num = key
+    else
+        num = digest.crc32(key)
+    end
+    local shard = shards[1 + digest.guava(num, shards_n)]
+    local res = {}
     local k = 1
-    for i=1,redundancy do
-        local zone = servers[tonumber(1 + (num + i) % servers_n)]
-        local server = zone[1 + digest.guava(num, #zone)]
-        -- ignore died servers
-        if not server.ignore and (server.conn:is_connected() or dead ~= nil) then
-            shards[k] = server
+    for i = 1, redundancy do
+        local srv = shard[i]
+        if server_is_ok(srv) or include_dead then
+            res[k] = srv
             k = k + 1
         end
     end
-    return shards
+    return res
 end
 
 -- shard monitoring fiber
@@ -123,7 +137,8 @@ local function monitor_fiber()
     local i = 0
     while true do
         i = i + 1
-        local server = shard(i, true)[1]
+        local servers = shard(i, true)
+        local server = servers[math.random(#servers)]
         local uri = server.uri
         local dead = false
         for k, v in pairs(heartbeat_state) do
@@ -154,36 +169,16 @@ local function monitor_fiber()
     end
 end
 
-local function is_ignored(uri)
-    local result = false
-    for _, zone in ipairs(servers) do
-        for _, server in ipairs(zone) do
-            if server.uri == uri and server.ignore then
-                result = true
-                break
-            end
-        end
-    end
-    return result
-end
-
 -- merge node response data with local table by fiber time
 local function merge_tables(response)
     if response == nil then
         return
     end
-    for seen_by_uri, node_table in pairs(response) do
-        local node_data = heartbeat_state[seen_by_uri]
-        if not is_ignored(seen_by_uri) then
-            if not node_data then
-                heartbeat_state[seen_by_uri] = node_table
-                node_data = heartbeat_state[seen_by_uri]
-                epoch_counter = epoch_counter + 1
-            end
+    for seen_by_uri, node_data in pairs(heartbeat_state) do
+        local node_table = response[seen_by_uri]
+        if node_table ~= nil then
             for uri, data in pairs(node_table) do
-                -- update if not data or if we have fresh time
-                local empty_row = not node_data[uri] or not node_data[uri].ts
-                if empty_row or data.ts > node_data[uri].ts then
+                if data.ts > node_data[uri].ts then
                     log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
                     node_data[uri] = data
                 end
@@ -196,19 +191,12 @@ end
 local function update_heartbeat(uri, response, status)
     -- set or update opinions and timestamp
     local opinion = heartbeat_state[self_server.uri]
-    if not opinion[uri] then
-        opinion[uri] = {
-            try= 0,         -- number of errors
-            ts=fiber.time() -- time of try
-        }
-    end
     if not status then
         opinion[uri].try = opinion[uri].try + 1
     else
         opinion[uri].try = 0
     end
     opinion[uri].ts = fiber.time()
-
     -- update local heartbeat table
     merge_tables(response)
 end
@@ -216,12 +204,12 @@ end
 -- heartbeat worker
 local function heartbeat_fiber()
     fiber.name("heartbeat")
-    heartbeat_state[self_server.uri] = {}
     local i = 0
     while true do
         i = i + 1
         -- random select node to check
-        local server = shard(i, true)[1]
+        local servers = shard(i, true)
+        local server = servers[math.random(#servers)]
         local uri = server.uri
         log.debug("checking %s", uri)
 
@@ -281,6 +269,90 @@ local function request(self, space, operation, tuple_id, ...)
         k = k + 1
     end
     return result
+end
+
+local function broadcast_select(task)
+    local c = task.server.conn
+    local index = c:timeout(REMOTE_TIMEOUT).space[task.space].index[task.index]
+    local key = task.args[1]
+    local offset =  task.args[2]
+    local limit = task.args[3]
+    local tuples = index:select(key, { offset = offset, limit = limit })
+    for _, v in ipairs(tuples) do
+        table.insert(task.result, v)
+    end
+end
+
+local function find_server_in_shard(shard, hint)
+    local srv = shard[hint]
+    if server_is_ok(srv) then
+        return srv
+    end
+    for i=1,redundancy do
+        srv = shard[i]
+        if server_is_ok(srv) then
+           return srv
+        end
+    end
+    return nil
+end
+
+local function q_select(self, space, index, args)
+    local sk = box.space[space].index[index]
+    local pk = box.space[space].index[0]
+    if sk == pk or sk.parts[1].fieldno == pk.parts[1].fieldno then
+        local key = args[1]
+        if type(key) == 'table' then
+            key = key[1]
+        end
+        local offset = args[2]
+        local limit = args[3]
+        local srv = shard(key)[1]
+        local i = srv.conn:timeout(REMOTE_TIMEOUT).space[space].index[index]
+        log.info('%s.space.%s.index.%s:select{%s, {offset = %s, limit = %s}',
+            srv.uri, space, index, json.encode(key), offset, limit)
+        local tuples = i:select(key, { offset = offset, limit = limit })
+        if tuples == nil then
+            tuples = {}
+        end
+        return tuples
+    else
+        log.info("%s.%s.id = %d",
+            space, index, box.space[space].index[index].id)
+    end
+    local zone = math.floor(math.random() * redundancy) + 1
+    local tuples = {}
+        local q = queue(broadcast_select, shards_n)
+    for i=1,shards_n do
+        local srv = find_server_in_shard(shards[i], zone)
+        local task = {server = srv, space = space, index = index,
+                      args = args, result = tuples }
+        q:put(task)
+    end
+    q:join()
+    return tuples
+end
+
+local function broadcast_call(task)
+    local c = task.server.conn
+    local tuples = c:timeout(REMOTE_TIMEOUT):call(task.proc, unpack(task.args))
+    for _, v in ipairs(tuples) do
+        table.insert(task.result, v)
+    end
+end
+
+local function q_call(proc, args)
+        local q = queue(broadcast_call, shards_n)
+    local tuples = {}
+    local zone = math.floor(math.random() * redundancy) + 1
+    for i=1,shards_n do
+        local srv = find_server_in_shard(shards[i], zone)
+        local task = { server = srv, proc = proc, args = args,
+                      result = tuples }
+        q:put(task)
+    end
+    q:join()
+    return tuples
 end
 
 -- execute operation, call from remote node
@@ -438,13 +510,20 @@ local function next_id(space)
     local key = s.name .. '_max_id'
     local _schema = box.space._schema
     local tuple = _schema:get{key}
+    local next_id
     if tuple == nil then
-        tuple = _schema:insert{key, server_id}
+        tuple = box.space[space].index[0]:max()
+        if tuple == nil then
+            next_id = server_id
+        else
+            next_id = math.floor((tuple[1]+ 2 * servers_n+1)/servers_n)*servers_n + server_id
+        end
+        _schema:insert{key, next_id}
     else
-        local next_id = tuple[2] + server_id
+        next_id = tuple[2] + servers_n
         tuple = _schema:update({key}, {{'=', 2, next_id}})
     end
-    return tuple[2]
+    return next_id
 end
 
 -- default request wrappers for db operations
@@ -544,6 +623,35 @@ local function q_begin()
     return batch_obj
 end
 
+-- function to check a connection after it's established
+local function check_connection(conn)
+    return true
+end
+
+local function is_table_filled()
+    local result = true
+    for _, server in pairs(configuration.servers) do
+        if heartbeat_state[server.uri] == nil then
+            result = false
+            break
+        end
+        for _, lserver in pairs(configuration.servers) do
+            local srv = heartbeat_state[server.uri][lserver.uri]
+            if srv == nil then
+                result = false
+                break
+            end
+        end
+    end
+    return result
+end
+
+local function wait_table_fill()
+    while not is_table_filled() do
+        fiber.sleep(0.01)
+    end
+end
+
 local function create_spaces(cfg)
     if not box.space.operations then
         local operations = box.schema.create_space('operations')
@@ -553,43 +661,183 @@ local function create_spaces(cfg)
     configuration = cfg
 end
 
+local function shard_mapping(zones)
+    -- fill shard table with start values
+    for _, server in pairs(configuration.servers) do
+        heartbeat_state[server.uri] = {}
+        for _, lserver in pairs(configuration.servers) do
+            heartbeat_state[server.uri][lserver.uri] = {
+                try= 0,         
+                ts=INFINITY_MIN
+            }
+        end
+    end
+
+    -- iterate over all zones, and build shards, aka replica set
+    -- each replica set has 'redundancy' servers from different
+    -- zones
+    local server_id = 1
+    shards_n = 1
+    local prev_shards_n = 0
+    while shards_n ~= prev_shards_n do
+        prev_shards_n = shards_n
+        for _, zone in pairs(zones) do
+            if shards[shards_n] == nil then
+                shards[shards_n] = {}
+            end
+            local shard = shards[shards_n]
+            local srv = zone[server_id]
+            -- we must double check that the same
+            for _, v in pairs(shard) do
+                if srv == nil then
+                    break
+                end
+                if v.zone == srv.zone then
+                    log.error('not using server %s', srv.uri)
+                    srv = nil
+                end
+            end
+            if srv ~= nil then
+                log.info("Adding %s to shard %d", srv.uri, shards_n)
+                table.insert(shards[shards_n], srv)
+                if #shards[shards_n] == redundancy then
+                    shards_n = shards_n + 1
+                end
+            end
+        end
+        server_id = server_id + 1
+    end
+    if shards[shards_n] == nil or #shards[shards_n] < redundancy then
+        if shards[shards_n] ~= nil then
+            for _, srv in pairs(shards[shards_n]) do
+                log.error('not using server %s', srv.uri)
+            end
+        end
+        shards[shards_n] = nil
+        shards_n = shards_n - 1
+    end
+    log.info("shards = %d", shards_n)
+end
+
+local function get_heartbeat()
+    return heartbeat_state
+end
+
+local function enable_operations()
+    -- set base operations
+    shard_obj.single_call = single_call
+    shard_obj.request = request
+    shard_obj.queue_request = queue_request
+
+    -- set 1-phase operations
+    shard_obj.insert = insert
+    shard_obj.auto_increment = auto_increment
+    shard_obj.select = select
+    shard_obj.replace = replace
+    shard_obj.update = update
+    shard_obj.delete = delete
+
+    -- set 2-phase operations
+    shard_obj.q_insert = q_insert
+    shard_obj.q_auto_increment = q_auto_increment
+    shard_obj.q_replace = q_replace
+    shard_obj.q_update = q_update
+    shard_obj.q_delete = q_delete
+    shard_obj.q_begin = q_begin
+    shard_obj.q_select = q_select
+    shard_obj.q_call = q_call
+
+    -- set helpers
+    shard_obj.check_operation = check_operation
+    shard_obj.get_heartbeat = get_heartbeat
+ 
+    -- enable easy spaces access
+    setmetatable(shard_obj, {
+        __index = function (self, space)
+            return {
+                auto_increment = function(this, ...)
+                    return self.auto_increment(self, space, ...)
+                end,
+                insert = function(this, ...)
+                    return self.insert(self, space, ...)
+                end,
+                select = function(this, ...)
+                    return self.select(self, space, ...)
+                end,
+                replace = function(this, ...)
+                    return self.replace(self, space, ...)
+                end,
+                delete = function(this, ...)
+                    return self.delete(self, space, ...)
+                end,
+                update = function(this, ...)
+                    return self.update(self, space, ...)
+                end,
+
+                q_auto_increment = function(this, ...)
+                    return self.q_auto_increment(self, space, ...)
+                end,
+                q_insert = function(this, ...)
+                    return self.q_insert(self, space, ...)
+                end,
+                q_replace = function(this, ...)
+                    return self.q_replace(self, space, ...)
+                end,
+                q_delete = function(this, ...)
+                    return self.q_delete(self, space, ...)
+                end,
+                q_update = function(this, ...)
+                    return self.q_update(self, space, ...)
+                end,
+                q_select = function(this, ...)
+                    return self.q_select(self, space, ...)
+                end,
+                check_operation = function(this, ...)
+                    return self.check_operation(self, space, ...)
+                end,
+                single_call = function(this, ...)
+                    return self.single_call(self, space, ...)
+                end
+            }
+        end
+    })
+end
 
 -- init shard, connect with servers
 local function init(cfg, callback)
     create_spaces(cfg)
     log.info('establishing connection to cluster servers...')
-    servers = {}
-    
+
     -- math.randomseed(os.time())
+    servers_n = 0
     local zones = {}
+    local zones_n = 0
     for id, server in pairs(cfg.servers) do
+        servers_n = servers_n + 1
+        if zones[server.zone] == nil then
+            zones_n = zones_n + 1
+            zones[server.zone] = { id = zones_n, n = 0 }
+        end
+        local zone = zones[server.zone]
         local conn
         log.info(' - %s - connecting...', server.uri)
         while true do
-            conn = remote:new(
-                cfg.login..':'..cfg.password..'@'..server.uri,
-                { reconnect_after = RECONNECT_AFTER }
-            )
-            if conn:ping() and check_shard(conn) then
-                local zone = zones[server.zone]
-                if not zone then
-                    zone = {}
-                    zones[server.zone] = zone
-                    table.insert(servers, zone)
-                end
+            local uri = cfg.login..':'..cfg.password..'@'..server.uri
+            conn = remote:new(uri, { reconnect_after = RECONNECT_AFTER })
+            if conn:ping() and check_connection(conn) then
                 local srv = {
                     uri = server.uri, conn = conn,
                     login=cfg.login, password=cfg.password,
-                    id = id
+                    id = id, zone = zone.id
                 }
+                zone.n = zone.n + 1
+                zone[zone.n] = srv
                 if callback ~= nil then
                     callback(srv)
                 end
-                if conn:eval("return box.info.server.uuid") ==
-                            box.info.server.uuid then
+                if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
                     self_server = srv
                 end
-                table.insert(zone, srv)
                 break
             end
             conn:close()
@@ -599,26 +847,27 @@ local function init(cfg, callback)
         log.info(' - %s - connected', server.uri)
     end
     log.info('connected to all servers')
-    redundancy = cfg.redundancy or #servers
-    servers_n = #servers
+    redundancy = cfg.redundancy or zones_n
+    if redundancy > zones_n then
+        log.error("the number of zones (%d) must be greater than %d",
+                  zones_n, redundancy)
+        error("the number of zones must be greater than redundancy")
+    end
     log.info("redundancy = %d", redundancy)
-
+    shard_mapping(zones)
     -- run monitoring and heartbeat fibers by default
     if cfg.monitor == nil or cfg.monitor then
         fiber.create(heartbeat_fiber)
         fiber.create(monitor_fiber)
     end
+    enable_operations()
     log.info('started')
     init_complete = true
     return true
 end
 
 local function len()
-    return servers_n
-end
-
-local function get_heartbeat()
-    return heartbeat_state
+    return shards_n
 end
 
 local function is_connected()
@@ -627,7 +876,7 @@ end
 
 local function wait_connection()
     while not is_connected() do
-        fiber.sleep(0.1)
+        fiber.sleep(0.01)
     end
 end
 
@@ -638,7 +887,7 @@ end
 
 local function wait_operations()
     while has_unfinished_operations() do
-        fiber.sleep(0.1)
+        fiber.sleep(0.01)
     end
 end
 
@@ -648,27 +897,19 @@ end
 
 local function wait_epoch(epoch)
     while get_epoch() < epoch do
-        fiber.sleep(0.1)
+        fiber.sleep(0.01)
     end
 end
 
-local function is_table_filled()
-    local result = true
-    for id, server in pairs(configuration.servers) do
-        if heartbeat_state[server.uri] == nil then
-            result = false
-            break
-        end
-    end
-    return result
-end
-
-local shard_obj = {
+shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
     DEAD_TIMEOUT = DEAD_TIMEOUT,
     RECONNECT_AFTER = RECONNECT_AFTER,
-    servers = servers,
+
+    shards = shards,
+    shards_n = shards_n,
+    servers_n = servers_n,
     len = len,
     redundancy = redundancy,
     is_connected = is_connected,
@@ -677,81 +918,12 @@ local shard_obj = {
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
     is_table_filled = is_table_filled,
+    wait_table_fill = wait_table_fill,
     queue = queue,
-
-    shard = shard,
-    single_call = single_call,
-    request = request,
-    queue_request = queue_request,
     init = init,
+    shard = shard,
     check_shard = check_shard,
-    insert = insert,
-    auto_increment = auto_increment,
-    select = select,
-    replace = replace,
-    update = update,
-    delete = delete,
-    q_insert = q_insert,
-    q_auto_increment = q_auto_increment,
-    q_replace = q_replace,
-    q_update = q_update,
-    q_delete = q_delete,
-    q_begin = q_begin,
-    check_operation = check_operation,
-    get_heartbeat = get_heartbeat,
 }
-
-
-
-setmetatable(shard_obj, {
-    __index = function (self, space)
-        return {
-            auto_increment = function(this, ...)
-                return self.auto_increment(self, space, ...)
-            end,
-            insert = function(this, ...)
-                return self.insert(self, space, ...)
-            end,
-            select = function(this, ...)
-                return self.select(self, space, ...)
-            end,
-            replace = function(this, ...)
-                return self.replace(self, space, ...)
-            end,
-            delete = function(this, ...)
-                return self.delete(self, space, ...)
-            end,
-            update = function(this, ...)
-                return self.update(self, space, ...)
-            end,
-
-            q_auto_increment = function(this, ...)
-                return self.q_auto_increment(self, space, ...)
-            end,
-            q_insert = function(this, ...)
-                return self.q_insert(self, space, ...)
-            end,
-            q_replace = function(this, ...)
-                return self.q_replace(self, space, ...)
-            end,
-            q_delete = function(this, ...)
-                return self.q_delete(self, space, ...)
-            end,
-            q_update = function(this, ...)
-                return self.q_update(self, space, ...)
-            end,
-            check_operation = function(this, ...)
-                return self.check_operation(self, space, ...)
-            end,
-
-            single_call = function(this, ...)
-                return self.single_call(self, space, ...)
-           end
-        }
-    end
-})
 
 return shard_obj
 -- vim: ts=4:sw=4:sts=4:et
-
-
