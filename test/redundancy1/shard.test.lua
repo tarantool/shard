@@ -6,10 +6,10 @@
 shard.wait_connection()
 
 -- num keys
-shard.shard(0)[1].uri
+#shard.shard(0)
 
 -- str keys
-shard.shard('abc')[1].uri
+#shard.shard('abc')
 
 --# stop server master1
 --# stop server master2

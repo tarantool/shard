@@ -6,15 +6,15 @@
 shard.wait_connection()
 
 -- monitoring test
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection master1
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection master2
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection default

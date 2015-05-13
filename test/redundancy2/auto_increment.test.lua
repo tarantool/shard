@@ -24,10 +24,10 @@ box.space.demo:select()
 --# set connection master2
 shard.wait_operations()
 box.space.demo:select()
---# set connection default
 
 box.space.operations:select()
 
+--# set connection default
 --# stop server master1
 --# stop server master2
 --# cleanup server master1

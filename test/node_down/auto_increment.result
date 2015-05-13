@@ -11,29 +11,29 @@ shard.demo:auto_increment{'test'}
 ...
 shard.demo:auto_increment{'test2'}
 ---
-- - [2, 'test2']
-  - [2, 'test2']
+- - [3, 'test2']
+  - [3, 'test2']
 ...
 shard.demo:auto_increment{'test3'}
 ---
-- - [3, 'test3']
-  - [3, 'test3']
+- - [5, 'test3']
+  - [5, 'test3']
 ...
 --# stop server master1
 shard.demo:q_auto_increment(1, {'test4'})
 ---
-- [4, 'test4']
+- [7, 'test4']
 ...
 batch = shard.q_begin()
 ---
 ...
 batch.demo:q_auto_increment(2, {'test5'})
 ---
-- [5, 'test5']
+- [9, 'test5']
 ...
 batch.demo:q_auto_increment(3, {'test6'})
 ---
-- [6, 'test6']
+- [11, 'test6']
 ...
 batch:q_end()
 ---
@@ -44,16 +44,16 @@ shard.wait_operations()
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [2, 'test2']
-  - [3, 'test3']
-  - [4, 'test4']
-  - [5, 'test5']
-  - [6, 'test6']
+  - [3, 'test2']
+  - [5, 'test3']
+  - [7, 'test4']
+  - [9, 'test5']
+  - [11, 'test6']
 ...
 box.space.operations:select()
 ---
-- - ['1', 2, [[512, 'insert', [[4, 'test4']]]]]
-  - ['3', 2, [[512, 'insert', [[5, 'test5']]], [512, 'insert', [[6, 'test6']]]]]
+- - ['1', 2, [[512, 'insert', [[7, 'test4']]]]]
+  - ['3', 2, [[512, 'insert', [[9, 'test5']]], [512, 'insert', [[11, 'test6']]]]]
 ...
 --# cleanup server master1
 --# stop server default

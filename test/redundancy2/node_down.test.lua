@@ -4,34 +4,34 @@
 --# start server master2
 --# set connection default
 shard.wait_connection()
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection master1
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection master2
-shard.wait_epoch(3)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 --# set connection default
 
 -- Kill server and wait for monitoring fibers kill
---# stop server master1
+--# stop server default
+
+--# set connection master1
 
 -- Check that node is removed from shard
-shard.wait_epoch(4)
 shard.is_table_filled()
 
 --# set connection master2
-shard.wait_epoch(4)
 shard.is_table_filled()
 
---# set connection default
+--# set connection master1
+--# stop server master1
 --# stop server master2
 --# cleanup server master1
 --# cleanup server master2
---# stop server default
 --# start server default
 --# set connection default

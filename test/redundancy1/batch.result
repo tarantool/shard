@@ -41,7 +41,7 @@ shard.wait_operations()
 ...
 box.space.demo:select()
 ---
-- - [1, 'test4']
+- []
 ...
 --# set connection master1
 shard.wait_operations()
@@ -58,11 +58,12 @@ shard.wait_operations()
 box.space.demo:select()
 ---
 - - [0, 'test3']
+  - [1, 'test4']
 ...
 --# set connection default
 box.space.operations:select()
 ---
-- - ['6', 2, [[512, 'insert', [[1, 'test4']]]]]
+- []
 ...
 -- check for operation q_insert is in shard
 shard.demo:check_operation(6, 0)

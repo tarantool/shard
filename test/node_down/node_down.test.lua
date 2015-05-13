@@ -2,12 +2,12 @@
 --# start server master1
 --# set connection default
 shard.wait_connection()
-shard.wait_epoch(2)
+shard.wait_table_fill()
 shard.is_table_filled()
 
 -- Kill server and wait for monitoring fibers kill
 --# stop server master1
-shard.wait_epoch(3)
+shard.wait_epoch(2)
 shard.is_table_filled()
 
 --# cleanup server master1

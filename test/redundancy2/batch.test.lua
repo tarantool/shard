@@ -24,9 +24,10 @@ box.space.demo:select()
 --# set connection master2
 shard.wait_operations()
 box.space.demo:select()
---# set connection default
 
 box.space.operations:select()
+
+--# set connection default
 
 -- check for operation q_insert is in shard
 shard.demo:check_operation(6, 0)

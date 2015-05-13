@@ -38,18 +38,19 @@ shard.demo:delete(3)
 ...
 box.space.demo:select()
 ---
-- - [1, 'test3']
-  - [2, 'test4']
+- []
 ...
 --# set connection master1
 box.space.demo:select()
 ---
 - - [1, 'test3']
+  - [2, 'test4']
 ...
 --# set connection master2
 box.space.demo:select()
 ---
-- - [2, 'test4']
+- - [1, 'test3']
+  - [2, 'test4']
 ...
 --# set connection default
 --# stop server master1

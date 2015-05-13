@@ -30,7 +30,7 @@ if not box.space.demo then
     box.schema.user.grant(cfg.login, 'read,write,execute', 'universe')
 	
     local demo = box.schema.create_space('demo')
-    demo:create_index('primary', {type = 'hash', parts = {1, 'num'}})
+    demo:create_index('primary', {type = 'tree', parts = {1, 'num'}})
 end
 
 function print_shard_map()

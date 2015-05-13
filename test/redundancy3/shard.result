@@ -7,14 +7,14 @@ shard.wait_connection()
 ---
 ...
 -- num keys
-shard.shard(0)[1].uri
+#shard.shard(0)
 ---
-- localhost:33132
+- 3
 ...
 -- str keys
-shard.shard('abc')[1].uri
+#shard.shard('abc')
 ---
-- localhost:33131
+- 3
 ...
 --# stop server master1
 --# stop server master2

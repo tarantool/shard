@@ -13,28 +13,28 @@ shard.demo:auto_increment{'test'}
 ...
 shard.demo:auto_increment{'test2'}
 ---
-- - [2, 'test2']
-  - [2, 'test2']
+- - [4, 'test2']
+  - [4, 'test2']
 ...
 shard.demo:auto_increment{'test3'}
 ---
-- - [3, 'test3']
-  - [3, 'test3']
+- - [7, 'test3']
+  - [7, 'test3']
 ...
 shard.demo:q_auto_increment(1, {'test4'})
 ---
-- [4, 'test4']
+- [10, 'test4']
 ...
 batch = shard.q_begin()
 ---
 ...
 batch.demo:q_auto_increment(2, {'test5'})
 ---
-- [5, 'test5']
+- [13, 'test5']
 ...
 batch.demo:q_auto_increment(3, {'test6'})
 ---
-- [6, 'test6']
+- [16, 'test6']
 ...
 batch:q_end()
 ---
@@ -45,12 +45,7 @@ shard.wait_operations()
 ...
 box.space.demo:select()
 ---
-- - [1, 'test']
-  - [2, 'test2']
-  - [3, 'test3']
-  - [4, 'test4']
-  - [5, 'test5']
-  - [6, 'test6']
+- []
 ...
 --# set connection master1
 shard.wait_operations()
@@ -59,7 +54,11 @@ shard.wait_operations()
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [4, 'test4']
+  - [4, 'test2']
+  - [7, 'test3']
+  - [10, 'test4']
+  - [13, 'test5']
+  - [16, 'test6']
 ...
 --# set connection master2
 shard.wait_operations()
@@ -67,17 +66,19 @@ shard.wait_operations()
 ...
 box.space.demo:select()
 ---
-- - [2, 'test2']
-  - [3, 'test3']
-  - [5, 'test5']
-  - [6, 'test6']
+- - [1, 'test']
+  - [4, 'test2']
+  - [7, 'test3']
+  - [10, 'test4']
+  - [13, 'test5']
+  - [16, 'test6']
 ...
---# set connection default
 box.space.operations:select()
 ---
-- - ['1', 2, [[512, 'insert', [[4, 'test4']]]]]
-  - ['3', 2, [[512, 'insert', [[5, 'test5']]], [512, 'insert', [[6, 'test6']]]]]
+- - ['1', 2, [[512, 'insert', [[10, 'test4']]]]]
+  - ['3', 2, [[512, 'insert', [[13, 'test5']]], [512, 'insert', [[16, 'test6']]]]]
 ...
+--# set connection default
 --# stop server master1
 --# stop server master2
 --# cleanup server master1
