@@ -228,28 +228,11 @@ local function heartbeat_fiber()
 end
 
 -- base remote operation call
-
-function deepcopy(orig)
-    local orig_type = type(orig)
-    local copy
-    if orig_type == 'table' then
-        copy = {}
-        for orig_key, orig_value in next, orig, nil do
-            copy[deepcopy(orig_key)] = deepcopy(orig_value)
-        end
-        setmetatable(copy, deepcopy(getmetatable(orig)))
-    else -- number, string, boolean, etc
-        copy = orig
-    end
-    return copy
-end
-
 local function single_call(self, space, server, operation, ...)
     result = nil
     local status, reason = pcall(function(...)
-        local args = deepcopy({...})
         self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
-        result = self[operation](self, unpack(args))
+        result = self[operation](self, ...)
     end, ...)
     if not status then
         log.error('failed to %s on %s: %s', operation, server.uri, reason)
