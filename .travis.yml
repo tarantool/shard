@@ -16,4 +16,4 @@ before_script:
 script:
   - pip install -r test-run/requirements.txt
   - pip install git+https://github.com/tarantool/tarantool-python.git
-  - python test/test-run.py --force
+  - cd test/ && python test-run.py --force
