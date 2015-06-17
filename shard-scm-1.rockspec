@@ -11,7 +11,7 @@ description = {
 }
 dependencies = {
     'lua >= 5.1',
-    'tarantool-pool'
+    'pool'
 }
 build = {
     type = 'builtin',
