@@ -8,6 +8,7 @@ local remote = require('net.box')
 local yaml = require('yaml')
 local uuid = require('uuid')
 local json = require('json')
+local lib_pool = require('pool')
 
 local shards = {}
 local shards_n
@@ -16,18 +17,14 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 500
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
-local INFINITY_MIN = -1
 local RECONNECT_AFTER = msgpack.NULL
 
-local self_server
-heartbeat_state = {}
-
+local pool = lib_pool.new()
 local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
 
 local init_complete = false
-local epoch_counter = 1
 local configuration = {}
 local shard_obj
 
@@ -100,16 +97,6 @@ queue_mt = {
     }
 }
 
--- sharding heartbeat monitoring function
-function heartbeat()
-    log.debug('ping')
-    return heartbeat_state
-end
-
-local function server_is_ok(srv)
-    return not srv.ignore and srv.conn:is_connected()
-end
-
 -- main shards search function
 local function shard(key, include_dead)
     local num
@@ -123,108 +110,12 @@ local function shard(key, include_dead)
     local k = 1
     for i = 1, redundancy do
         local srv = shard[i]
-        if server_is_ok(srv) or include_dead then
+        if pool:server_is_ok(srv) or include_dead then
             res[k] = srv
             k = k + 1
         end
     end
     return res
-end
-
--- shard monitoring fiber
-local function monitor_fiber()
-    fiber.name("monitor")
-    local i = 0
-    while true do
-        i = i + 1
-        local servers = shard(i, true)
-        local server = servers[math.random(#servers)]
-        local uri = server.uri
-        local dead = false
-        for k, v in pairs(heartbeat_state) do
-            -- true only if there is stuff in heartbeat_state
-            if k ~= uri then
-                dead = true
-                log.debug("monitoring: %s", uri)
-                break
-            end
-        end
-        for k, v in pairs(heartbeat_state) do
-            -- kill only if DEAD_TIMEOUT become in all servers
-            if k ~= uri and (v[uri] == nil or v[uri].try < DEAD_TIMEOUT) then
-                log.debug("%s is alive", uri)
-                dead = false
-                break
-            end
-        end
-
-        if dead then
-            log.info("kill %s by dead timeout", uri)
-            server.conn:close()
-            server.ignore = true
-            heartbeat_state[uri] = nil
-            epoch_counter = epoch_counter + 1
-        end
-        fiber.sleep(math.random(100)/1000)
-    end
-end
-
--- merge node response data with local table by fiber time
-local function merge_tables(response)
-    if response == nil then
-        return
-    end
-    for seen_by_uri, node_data in pairs(heartbeat_state) do
-        local node_table = response[seen_by_uri]
-        if node_table ~= nil then
-            for uri, data in pairs(node_table) do
-                if data.ts > node_data[uri].ts then
-                    log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
-                    node_data[uri] = data
-                end
-            end
-        end
-    end
-end
-
--- heartbeat table and opinions management
-local function update_heartbeat(uri, response, status)
-    -- set or update opinions and timestamp
-    local opinion = heartbeat_state[self_server.uri]
-    if not status then
-        opinion[uri].try = opinion[uri].try + 1
-    else
-        opinion[uri].try = 0
-    end
-    opinion[uri].ts = fiber.time()
-    -- update local heartbeat table
-    merge_tables(response)
-end
-
--- heartbeat worker
-local function heartbeat_fiber()
-    fiber.name("heartbeat")
-    local i = 0
-    while true do
-        i = i + 1
-        -- random select node to check
-        local servers = shard(i, true)
-        local server = servers[math.random(#servers)]
-        local uri = server.uri
-        log.debug("checking %s", uri)
-
-        -- get heartbeat from node
-        local response
-        local status, err_state = pcall(function()
-            response = server.conn:timeout(
-                HEARTBEAT_TIMEOUT):eval("return heartbeat()")
-        end)
-        -- update local heartbeat table
-        update_heartbeat(uri, response, status)
-        log.debug("%s", yaml.encode(heartbeat_state))
-        -- randomized wait for next check
-        fiber.sleep(math.random(1000)/1000)
-    end
 end
 
 -- base remote operation call
@@ -482,7 +373,7 @@ local function check_operation(self, space, operation_id, tuple_id)
 end
 
 local function next_id(space)
-    local server_id = self_server.id
+    local server_id = pool.self_server.id
     local s = box.space[space]
     if s == nil then
         box.error(box.error.NO_SUCH_SPACE, tostring(space))
@@ -503,7 +394,7 @@ local function next_id(space)
         end
         _schema:insert{key, next_id}
     else
-        next_id = tuple[2] + servers_n
+        next_id = tuple[2] + pool:len()
         tuple = _schema:update({key}, {{'=', 2, next_id}})
     end
     return next_id
@@ -612,27 +503,11 @@ local function check_connection(conn)
 end
 
 local function is_table_filled()
-    local result = true
-    for _, server in pairs(configuration.servers) do
-        if heartbeat_state[server.uri] == nil then
-            result = false
-            break
-        end
-        for _, lserver in pairs(configuration.servers) do
-            local srv = heartbeat_state[server.uri][lserver.uri]
-            if srv == nil then
-                result = false
-                break
-            end
-        end
-    end
-    return result
+    return pool:is_table_filled()
 end
 
 local function wait_table_fill()
-    while not is_table_filled() do
-        fiber.sleep(0.01)
-    end
+    return pool:wait_table_fill()
 end
 
 local function create_spaces(cfg)
@@ -645,17 +520,6 @@ local function create_spaces(cfg)
 end
 
 local function shard_mapping(zones)
-    -- fill shard table with start values
-    for _, server in pairs(configuration.servers) do
-        heartbeat_state[server.uri] = {}
-        for _, lserver in pairs(configuration.servers) do
-            heartbeat_state[server.uri][lserver.uri] = {
-                try= 0,         
-                ts=INFINITY_MIN
-            }
-        end
-    end
-
     -- iterate over all zones, and build shards, aka replica set
     -- each replica set has 'redundancy' servers from different
     -- zones
@@ -665,17 +529,18 @@ local function shard_mapping(zones)
     while shards_n ~= prev_shards_n do
         prev_shards_n = shards_n
         for _, zone in pairs(zones) do
+            log.info('Zone len=%d THERE', #zone.list)
             if shards[shards_n] == nil then
                 shards[shards_n] = {}
             end
             local shard = shards[shards_n]
-            local srv = zone[server_id]
+            local srv = zone.list[server_id]
             -- we must double check that the same
             for _, v in pairs(shard) do
                 if srv == nil then
                     break
                 end
-                if v.zone == srv.zone then
+                if v.zone and v.zone.list == srv.zone then
                     log.error('not using server %s', srv.uri)
                     srv = nil
                 end
@@ -703,7 +568,7 @@ local function shard_mapping(zones)
 end
 
 local function get_heartbeat()
-    return heartbeat_state
+    return pool:get_heartbeat()
 end
 
 local function enable_operations()
@@ -789,62 +654,29 @@ end
 -- init shard, connect with servers
 local function init(cfg, callback)
     create_spaces(cfg)
-    log.info('establishing connection to cluster servers...')
+    log.info('Sharding initialization started...')
+    -- set constants
+    pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
+    pool.HEARTBEAT_TIMEOUT = shard_obj.HEARTBEAT_TIMEOUT
+    pool.DEAD_TIMEOUT = shard_obj.DEAD_TIMEOUT
+    pool.RECONNECT_AFTER = shard_obj.RECONNECT_AFTER
 
-    -- math.randomseed(os.time())
-    servers_n = 0
-    local zones = {}
-    local zones_n = 0
-    for id, server in pairs(cfg.servers) do
-        servers_n = servers_n + 1
-        if zones[server.zone] == nil then
-            zones_n = zones_n + 1
-            zones[server.zone] = { id = zones_n, n = 0 }
-        end
-        local zone = zones[server.zone]
-        local conn
-        log.info(' - %s - connecting...', server.uri)
-        while true do
-            local uri = cfg.login..':'..cfg.password..'@'..server.uri
-            conn = remote:new(uri, { reconnect_after = RECONNECT_AFTER })
-            if conn:ping() and check_connection(conn) then
-                local srv = {
-                    uri = server.uri, conn = conn,
-                    login=cfg.login, password=cfg.password,
-                    id = id, zone = zone.id
-                }
-                zone.n = zone.n + 1
-                zone[zone.n] = srv
-                if callback ~= nil then
-                    callback(srv)
-                end
-                if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
-                    self_server = srv
-                end
-                break
-            end
-            conn:close()
-            log.warn(" - %s - shard check failure", server.uri)
-            fiber.sleep(1)
-        end
-        log.info(' - %s - connected', server.uri)
-    end
-    log.info('connected to all servers')
-    redundancy = cfg.redundancy or zones_n
-    if redundancy > zones_n then
+    --init connection pool
+    pool:init(cfg)
+
+    redundancy = cfg.redundancy or pool:len()
+    if redundancy > pool.zones_n then
         log.error("the number of zones (%d) must be greater than %d",
-                  zones_n, redundancy)
+                  pool.zones_n, redundancy)
         error("the number of zones must be greater than redundancy")
     end
     log.info("redundancy = %d", redundancy)
-    shard_mapping(zones)
-    -- run monitoring and heartbeat fibers by default
-    if cfg.monitor == nil or cfg.monitor then
-        fiber.create(heartbeat_fiber)
-        fiber.create(monitor_fiber)
-    end
+
+    -- servers mappng
+    shard_mapping(pool.servers)
+
     enable_operations()
-    log.info('started')
+    log.info('Done')
     init_complete = true
     return true
 end
@@ -875,13 +707,11 @@ local function wait_operations()
 end
 
 local function get_epoch()
-    return epoch_counter
+    return pool:get_epoch()
 end
 
 local function wait_epoch(epoch)
-    while get_epoch() < epoch do
-        fiber.sleep(0.01)
-    end
+    return pool:wait_epoch(epoch)
 end
 
 shard_obj = {
