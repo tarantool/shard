@@ -18,8 +18,6 @@ box.cfg {
     slab_alloc_arena = 0.1;
     wal_mode = 'none';
     listen = cfg.binary;
-    pid_file  = "tarantool.pid";
-    logger  = "tarantool.log";
     custom_proc_title  = "master"
 }
 
