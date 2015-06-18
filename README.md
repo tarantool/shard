@@ -9,7 +9,7 @@ Install
 1. Add [tarantool repository](http://tarantool.org/download.html) for yum or apt
 2. Install
 ```bash
-$sudo [yum|apt-get] install tarantool tarantool-shard
+$sudo [yum|apt-get] install tarantool tarantool-shard tarantool-pool
 ```
 
 API
