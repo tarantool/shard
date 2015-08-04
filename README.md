@@ -2,7 +2,11 @@ Tarantool sharding module
 =========================
 [![Tests status](https://travis-ci.org/tarantool/shard.svg?branch=master)](https://travis-ci.org/tarantool/shard)
 
-Library for sharding in [tarantool 1.6] (http://tarantool.org). Implemented single-phase and two-phase protocol operations (queue and batching support), monitoring the availability of nodes and the possibility of automatic exclusion from the system. The following describes the functions of the library with examples of use. In the basic implementation the first element in tuple is used as key element.
+An application-level library that provides sharding and client-side reliable replication for [tarantool 1.6] (http://tarantool.org). Implements a single-phase and two-phase protocol operations (with batching support), monitors availability of nodes and automatically expells failed nodes from the cluster.
+
+To shard data across nodes, a variant of consistent hashing is used. The shard key is determined automatically based on sharded space description.
+
+The following describes functions of the library with examples of use. 
 
 Install
 -------
@@ -14,6 +18,12 @@ $sudo [yum|apt-get] install tarantool tarantool-shard tarantool-pool
 
 API
 ---
+Terminology
+* redundancy - the redundancy factor. How many copies of each tuple to maintain in the cluster
+* zone - a redundancy zone. May represent a single machine or a single data center. The number of zones must
+  be greater or equal to the redundancy factor: duplicating data in the same zone doesn't increase availability
+* binary - the listen port of this node
+
 ###`init(cfg)`  
 * cfg - sharding configuration
 
@@ -73,6 +83,13 @@ shard.demo:auto_increment{'test'}
 
 Two-phase operations
 -------------------
+
+Two phase operations work, well, in two phases. The first phase pushes the operation into an auxiliary space "operations" on all the involved shards, according to the redundancy factor. As soon as the operation
+is propagated to the shards, a separate call triggers execution of the operation on all shards. If the 
+caller dies before invoking the second phase, the shards figure out by themselves that the operation has been propagated and execute it anyway (it only takes a while, since the check is done only once in a period of time).
+The operation id is necessary to avoid double execution of the same operation (at most once execution semantics)
+and most be provided by the user. The status of the operation can always be checked, given its operation id, and
+provided that it has not been pruned from operations space.
 
 ###`q_*(operation_id, ...)`
 * operation_id - operation identifier (set by the user)
