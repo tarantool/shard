@@ -10,7 +10,8 @@ description = {
     license  = 'BSD',
 }
 dependencies = {
-    'lua >= 5.1',
+    'lua >= 5.1';
+    'connpool >= 1.1';
 }
 build = {
     type = 'builtin',

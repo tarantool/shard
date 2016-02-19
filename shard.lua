@@ -1,5 +1,3 @@
-#!/usr/bin/env tarantool
-
 local fiber = require('fiber')
 local log = require('log')
 local digest = require('digest')
@@ -8,7 +6,7 @@ local remote = require('net.box')
 local yaml = require('yaml')
 local uuid = require('uuid')
 local json = require('json')
-local lib_pool = require('pool')
+local lib_pool = require('connpool')
 
 local shards = {}
 local shards_n
