@@ -4,6 +4,8 @@ services:
 
 language: python
 env:
+    global:
+      - PRODUCT=tarantool-shard
     matrix:
       - OS=el DIST=6 PACK=rpm
       - OS=el DIST=7 PACK=rpm
