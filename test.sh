@@ -3,6 +3,6 @@ sudo apt-get update > /dev/null
 sudo apt-get -q -y install tarantool tarantool-dev tarantool-connpool
 
 git submodule update --init --recursive
-pip install -r test-run/requirements.txt --user
-pip install git+https://github.com/tarantool/tarantool-python.git --user
+sudo pip install -r test-run/requirements.txt
+sudo pip install git+https://github.com/tarantool/tarantool-python.git
 make test-force
