@@ -1,0 +1,5 @@
+tarantool-shard (1.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- Roman Tsisyk <roman@tarantool.org>  Fri, 19 Feb 2016 14:34:49 +0300

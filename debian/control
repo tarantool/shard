@@ -1,0 +1,20 @@
+Source: tarantool-shard
+Priority: optional
+Section: database
+Maintainer: Roman Tsisyk <roman@tarantool.org>
+Build-Depends: debhelper (>= 9),
+               tarantool (>= 1.6.8.0),
+               tarantool-connpool (>= 1.1.0)
+Standards-Version: 3.9.6
+Homepage: https://github.com/tarantool/shard
+Vcs-Git: git://github.com/tarantool/shard.git
+Vcs-Browser: https://github.com/tarantool/shard
+
+Package: tarantool-shard
+Architecture: all
+Depends: tarantool (>= 1.6.8.0), tarantool-connpool (>= 1.1.0), ${misc:Depends}
+Description: Tarantool sharding module
+ An application-level library that provides sharding and client-side reliable
+ replication for tarantool 1.6. Implements a single-phase and two-phase
+ protocol operations (with batching support), monitors availability of nodes
+ and automatically expells failed nodes from the cluster.
