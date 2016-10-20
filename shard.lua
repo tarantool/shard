@@ -26,6 +26,12 @@ local init_complete = false
 local configuration = {}
 local shard_obj
 
+-- 1.6 and 1.7 netbox compat
+local compat = string.sub(require('tarantool').version, 1,3)
+local nb_call = 'call'
+if compat ~= '1.6' then
+    nb_call = 'call_16'
+end
 
 --queue implementation
 local function queue_handler(self, fun)
@@ -231,7 +237,8 @@ end
 
 local function broadcast_call(task)
     local c = task.server.conn
-    local tuples = c:timeout(REMOTE_TIMEOUT):call(task.proc, unpack(task.args))
+    local conn = c:timeout(REMOTE_TIMEOUT)
+    local tuples = conn[nb_call](conn, task.proc, unpack(task.args))
     for _, v in ipairs(tuples) do
         table.insert(task.result, v)
     end
@@ -283,8 +290,9 @@ local function ack_operation(task)
     log.debug('ACK_OP')
     local server = task.server
     local operation_id = task.id
-    server.conn:timeout(REMOTE_TIMEOUT):call(
-        'execute_operation', operation_id
+    local conn = server.conn:timeout(REMOTE_TIMEOUT)
+    conn[nb_call](
+        conn, 'execute_operation', operation_id
     )
 end
 
@@ -363,8 +371,9 @@ local function check_operation(self, space, operation_id, tuple_id)
         for _, server in pairs(shard(tuple_id)) do
             -- check that transaction is queued to all hosts
             local status, reason = pcall(function()
-                task_status = server.conn:timeout(REMOTE_TIMEOUT):call(
-                    'find_operation', operation_id
+                local conn = server.conn:timeout(REMOTE_TIMEOUT)
+                task_status = conn[nb_call](
+                    conn, 'find_operation', operation_id
                 )[1][1]
             end)
             if not status or task_status == nil then
