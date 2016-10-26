@@ -1,13 +1,14 @@
---# create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'
---# start server master1
---# set connection default
+env = require('test_run')
+test_run = env.new()
+test_run:cmd("create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'")
+test_run:cmd("start server master1")
 shard.wait_connection()
 
 shard.demo:auto_increment{'test'}
 shard.demo:auto_increment{'test2'}
 shard.demo:auto_increment{'test3'}
 
---# stop server master1
+_ = test_run:cmd("stop server master1")
 
 shard.demo:q_auto_increment(1, {'test4'})
 batch = shard.q_begin()
@@ -19,7 +20,5 @@ shard.wait_operations()
 box.space.demo:select()
 box.space.operations:select()
 
---# cleanup server master1
---# stop server default
---# start server default
---# set connection default
+test_run:cmd("cleanup server master1")
+test_run:cmd("restart server default with cleanup=1")

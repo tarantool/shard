@@ -1,8 +1,9 @@
---# create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'
---# create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'
---# start server master1
---# start server master2
---# set connection default
+env = require('test_run')
+test_run = env.new()
+test_run:cmd("create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'")
+test_run:cmd("create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'")
+test_run:cmd("start server master1")
+test_run:cmd("start server master2")
 shard.wait_connection()
 
 -- monitoring test
@@ -10,22 +11,20 @@ shard.wait_connection()
 shard.wait_table_fill()
 shard.is_table_filled()
 
---# set connection master1
+test_run:cmd("switch master1")
 --shard.wait_epoch(3)
 shard.wait_table_fill()
 shard.is_table_filled()
 
---# set connection master2
+test_run:cmd("switch master2")
 --shard.wait_epoch(3)
 shard.wait_table_fill()
 shard.is_table_filled()
 
---# set connection default
+test_run:cmd("switch default")
 
---# stop server master1
---# stop server master2
---# cleanup server master1
---# cleanup server master2
---# stop server default
---# start server default
---# set connection default
+_ = test_run:cmd("stop server master1")
+_ = test_run:cmd("stop server master2")
+test_run:cmd("cleanup server master1")
+test_run:cmd("cleanup server master2")
+test_run:cmd("restart server default with cleanup=1")

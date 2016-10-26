@@ -1,8 +1,25 @@
---# create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'
---# create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'
---# start server master1
---# start server master2
---# set connection default
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+test_run:cmd("create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'")
+---
+- true
+...
+test_run:cmd("create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'")
+---
+- true
+...
+test_run:cmd("start server master1")
+---
+- true
+...
+test_run:cmd("start server master2")
+---
+- true
+...
 shard.wait_connection()
 ---
 ...
@@ -35,7 +52,6 @@ batch_obj.demo:q_delete(6, 2)
 batch_obj:q_end()
 ---
 ...
---# set connection default
 shard.wait_operations()
 ---
 ...
@@ -44,7 +60,10 @@ box.space.demo:select()
 - - [0, 'test3']
   - [1, 'test4']
 ...
---# set connection master1
+test_run:cmd("switch master1")
+---
+- true
+...
 shard.wait_operations()
 ---
 ...
@@ -53,7 +72,10 @@ box.space.demo:select()
 - - [0, 'test3']
   - [1, 'test4']
 ...
---# set connection master2
+test_run:cmd("switch master2")
+---
+- true
+...
 shard.wait_operations()
 ---
 ...
@@ -62,7 +84,10 @@ box.space.demo:select()
 - - [0, 'test3']
   - [1, 'test4']
 ...
---# set connection default
+test_run:cmd("switch default")
+---
+- true
+...
 -- check for operation q_insert is in shard
 shard.demo:check_operation(6, 0)
 ---
@@ -79,10 +104,18 @@ box.space.operations:select()
         512, 'update', [0, [['=', 2, 'test3']]]], [512, 'insert', [[1, 'test4']]],
       [512, 'insert', [[2, 'test_to_delete']]], [512, 'delete', [2]]]]
 ...
---# stop server master1
---# stop server master2
---# cleanup server master1
---# cleanup server master2
---# stop server default
---# start server default
---# set connection default
+_ = test_run:cmd("stop server master1")
+---
+...
+_ = test_run:cmd("stop server master2")
+---
+...
+test_run:cmd("cleanup server master1")
+---
+- true
+...
+test_run:cmd("cleanup server master2")
+---
+- true
+...
+test_run:cmd("restart server default with cleanup=1")

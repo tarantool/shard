@@ -1,6 +1,7 @@
---# create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'
---# start server master1
---# set connection default
+env = require('test_run')
+test_run = env.new()
+test_run:cmd("create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'")
+test_run:cmd("start server master1")
 shard.wait_connection()
 
 -- bipahse operations
@@ -13,7 +14,7 @@ batch.demo:q_insert(5, {2, 'test_to_delete'})
 batch.demo:q_delete(6, 2)
 batch:q_end()
 
---# stop server master1
+_ = test_run:cmd("stop server master1")
 
 shard.wait_operations()
 box.space.demo:select()
@@ -24,7 +25,5 @@ shard.demo:check_operation(6, 0)
 -- check for not exists operations
 shard.demo:check_operation('12345', 0)
 
---# cleanup server master1
---# stop server default
---# start server default
---# set connection default
+test_run:cmd("cleanup server master1")
+test_run:cmd("restart server default with cleanup=1")
