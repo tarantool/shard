@@ -35,7 +35,7 @@ shard.demo:replace{1, 'test2'}
   - [1, 'test2']
   - [1, 'test2']
 ...
-shard.demo:update(1, {{'=', 2, 'test3'}})
+shard.demo:update({1}, {{'=', 2, 'test3'}})
 ---
 - - [1, 'test3']
   - [1, 'test3']
@@ -53,7 +53,7 @@ shard.demo:insert{3, 'test5'}
   - [3, 'test5']
   - [3, 'test5']
 ...
-shard.demo:delete(3)
+shard.demo:delete({3})
 ---
 - - [3, 'test5']
   - [3, 'test5']

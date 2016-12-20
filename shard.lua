@@ -1,3 +1,5 @@
+#!/usr/bin/env tarantool
+
 local fiber = require('fiber')
 local log = require('log')
 local digest = require('digest')
@@ -12,7 +14,7 @@ local shards = {}
 local shards_n
 local redundancy = 3
 
-local REMOTE_TIMEOUT = 500
+local REMOTE_TIMEOUT = 210
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = msgpack.NULL
@@ -125,6 +127,8 @@ queue_mt = {
     }
 }
 
+local maintenance = {}
+
 -- main shards search function
 local function shard(key, include_dead)
     local num
@@ -137,13 +141,172 @@ local function shard(key, include_dead)
     local res = {}
     local k = 1
     for i = 1, redundancy do
-        local srv = shard[i]
-        if pool:server_is_ok(srv) or include_dead then
+        local srv = shard[redundancy - i + 1]
+        -- GH-72
+        -- we need to save shards state during maintenance
+        -- client will recive error "shard is unavailable"
+        if maintenance[srv.id] ~= nil
+                or pool:server_is_ok(srv) or include_dead then
             res[k] = srv
             k = k + 1
         end
     end
     return res
+end
+
+function shard_status()
+    local result = {
+        online = {},
+        offline = {},
+        maintenance = maintenance
+    }
+    for j=1, #shards do
+         local srd =shards[j]
+         for i=1, redundancy do
+             local s = {uri=srd[i].uri, id=srd[i].id}
+             if srd[i].conn:is_connected() then
+                 table.insert(result.online, s)
+             else
+                 table.insert(result.offline, s)
+             end
+         end
+    end
+    return result
+end
+
+local function is_shard_connected(uri, conn)
+    local try = 1
+    while try < 20 do
+        if conn:ping() then
+            return true
+        end
+        try = try + 1
+        fiber.sleep(0.01)
+    end
+    return false
+end
+
+local function shard_connect(s_obj)
+    if s_obj.conn:is_connected() then
+        maintenance[s_obj.id] = nil
+        return true
+    end
+    local msg = 'Failed to join shard %d with url "%s"'
+    local uri = s_obj.login .. ':' .. s_obj.password .. '@' .. s_obj.uri
+
+    -- try to join replica
+    s_obj.conn = remote:new(uri, { reconnect_after = RECONNECT_AFTER })
+    -- ping node
+    local joined = is_shard_connected(uri, s_obj.conn)
+
+    if joined then
+        msg = 'Succesfully joined shard %d with url "%s"'
+    end
+    log.info(msg, s_obj.id, s_obj.uri)
+    -- remove from maintenance table
+    maintenance[s_obj.id] = nil
+    return joined
+end
+
+local function shard_swap(group_id, shard_id)
+    -- save old shard
+    local zone = shards[group_id]
+    local ro_shard = zone[shard_id]
+
+    -- find current working RW shard
+    local i = 1
+    while not pool:server_is_ok(zone[redundancy - i + 1]) do
+        i = i + 1
+        -- GH-72/73
+        -- do not swap dead pairs (case #3 master and replica are
+        -- offline)
+        if zone[redundancy - i + 1] == nil then
+            return
+        end
+    end
+    local rw_shard = zone[redundancy - i + 1]
+    log.info('RW: %s', rw_shard.uri)
+    log.info('RO: %s', ro_shard.uri)
+
+    -- swap old and new
+    zone[redundancy - i + 1] = ro_shard
+    zone[#zone] = rw_shard
+end
+
+-- join node by id in this shard
+function join_shard(id)
+    for j=1, #shards do
+         local srd =shards[j]
+         for i=1, redundancy do
+             if srd[i].id == id then
+                 -- swap RO/RW shards
+                 local to_join = srd[i]
+                 to_join.ignore = true
+                 shard_swap(j, i)
+                 to_join.ignore = false
+                 -- try to join replica
+                 return shard_connect(to_join)
+             end
+         end
+    end
+    return false
+end
+
+function unjoin_shard(id)
+    -- In maintenance mode shard is available
+    -- but client will recive erorrs using this shard
+    maintenance[id] = true
+    return true
+end
+
+function cluster_operation(func_name, id)
+    local jlog = {}
+    local all_ok = true
+    for j=1, #shards do
+         local srd =shards[j]
+         for i=1, redundancy do
+             if srd[i].id ~= id then
+                 local result = false
+                 local ok, err = pcall(function()
+                     log.info(
+                         "Trying to '%s' shard %d with shard %s",
+                         func_name, id, srd[i].uri
+                     )
+                     local conn = srd[i].conn
+                     result = conn[nb_call](conn, func_name, id)[1][1]
+                 end)
+                 if not ok or not result then
+                     local msg = string.format(
+                        '"%s" error: %s',
+                        func_name, tostring(err)
+                     )
+                     table.insert(jlog, msg)
+                     log.error(msg)
+                     all_ok = false
+                 else
+                     local msg = string.format(
+                         "Operaion '%s' for shard %d in node '%s' applied",
+                         func_name, id, srd[i].uri
+                     )
+                     table.insert(jlog, msg)
+                     log.info(msg)
+                 end
+             end
+         end
+    end
+    return all_ok, jlog
+end
+
+-- join node by id in cluster:
+-- 1. Create new replica and wait lsn
+-- 2. Join storage cluster
+-- 3. Join front cluster
+function remote_join(id)
+    return cluster_operation("join_shard", id)
+end
+
+function remote_unjoin(id)
+    return cluster_operation("unjoin_shard", id)
 end
 
 -- base remote operation call
@@ -154,7 +317,27 @@ local function single_call(self, space, server, operation, ...)
         result = self[operation](self, ...)
     end, ...)
     if not status then
-        log.error('failed to %s on %s: %s', operation, server.uri, reason)
+        local err = string.format(
+            'failed to %s on %s: %s',
+            operation, server.uri, reason
+        )
+        log.error(err)
+        result = {status=false, error=err}
+        if not server.conn:is_connected() then
+            log.error("server %s is offline", server.uri)
+        end
+    end
+    return result
+end
+
+local function direct_call(self, server, func_name, ...)
+    local result = nil
+    local status, reason = pcall(function(...)
+        local conn = server.conn:timeout(REMOTE_TIMEOUT)
+        result = conn[nb_call](conn, func_name, ...)
+    end, ...)
+    if not status then
+        log.error('failed to call %s on %s: %s', func_name, server.uri, reason)
         if not server.conn:is_connected() then
             log.error("server %s is offline", server.uri)
         end
@@ -169,6 +352,9 @@ local function request(self, space, operation, tuple_id, ...)
     for i, server in ipairs(shard(tuple_id)) do
         result[k] = single_call(self, space, server, operation, ...)
         k = k + 1
+        if configuration.replication == true then
+            break
+        end
     end
     return result
 end
@@ -267,12 +453,15 @@ function execute_operation(operation_id)
         operation_id, {{'=', 2, STATE_INPROGRESS}}
     )
     local batch = tuple[3]
-    for _, operation in ipairs(batch) do    
+
+    local result
+
+    for _, operation in ipairs(batch) do
         local space = operation[1]
         local func_name = operation[2]
         local args = operation[3]
         local self = box.space[space]
-        self[func_name](self, unpack(args))
+        result = self[func_name](self, unpack(args))
     end
     box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
     box.commit()
@@ -346,6 +535,11 @@ local function queue_request(self, space, operation, operation_id, tuple_id, ...
         end
         local data = { box.space[space].id; operation; {...}; }
         batch[server][#batch[server] + 1] = data
+
+        -- insert into first server and break if we use replication
+        if configuration.replication == true then
+            break
+        end
     end
     if not batch_mode then
         local obj = {
@@ -433,7 +627,7 @@ end
 
 -- default request wrappers for db operations
 local function insert(self, space, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     return request(self, space, 'insert', tuple_id, data)
 end
 
@@ -443,21 +637,21 @@ local function auto_increment(self, space, data)
     return request(self, space, 'insert', id, data)
 end
 
-local function select(self, space, tuple_id)
-    return request(self, space, 'select', tuple_id, tuple_id)
+local function select(self, space, key, args)
+    return request(self, space, 'select', key[1], key, args)
 end
 
 local function replace(self, space, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     return request(self, space, 'replace', tuple_id, data)
 end
 
-local function delete(self, space, tuple_id)
-    return request(self, space, 'delete', tuple_id, tuple_id)
+local function delete(self, space, key)
+    return request(self, space, 'delete', key[1], key)
 end
 
 local function update(self, space, key, data)
-    return request(self, space, 'update', key, key, data)
+    return request(self, space, 'update', key[1], key, data)
 end
 
 local function q_insert(self, space, operation_id, data)
@@ -559,8 +753,7 @@ local function shard_mapping(zones)
     local prev_shards_n = 0
     while shards_n ~= prev_shards_n do
         prev_shards_n = shards_n
-        for _, zone in pairs(zones) do
-            log.info('Zone len=%d THERE', #zone.list)
+        for name, zone in pairs(zones) do
             if shards[shards_n] == nil then
                 shards[shards_n] = {}
             end
@@ -578,6 +771,7 @@ local function shard_mapping(zones)
             end
             if srv ~= nil then
                 log.info("Adding %s to shard %d", srv.uri, shards_n)
+                srv.zone_name = name
                 table.insert(shards[shards_n], srv)
                 if #shards[shards_n] == redundancy then
                     shards_n = shards_n + 1
@@ -605,6 +799,7 @@ end
 local function enable_operations()
     -- set base operations
     shard_obj.single_call = single_call
+    shard_obj.direct_call = direct_call
     shard_obj.request = request
     shard_obj.queue_request = queue_request
 
