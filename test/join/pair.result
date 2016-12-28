@@ -133,10 +133,12 @@ status
     id: 3
 ...
 -- add tuples
-shard.demo:insert{12, 'test_pair'}
+result = shard.demo:insert{12, 'test_pair'}
 ---
-- - status: false
-    error: 'failed to insert on localhost:33131: Peer closed'
+...
+result[1].status
+---
+- false
 ...
 -- start servers
 test_run:cmd("start server master1")
