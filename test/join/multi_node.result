@@ -1,0 +1,269 @@
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+-- start shards
+cluster(function(id)
+    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua', lua_libs='join/lua/shard.lua'")
+    test_run:cmd("start server master"..id)
+end);
+---
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+shard.wait_connection()
+---
+...
+for i=1, 10 do shard.demo:insert{i, 'test'} end
+---
+...
+-- check data
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master3")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master1")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+...
+test_run:cmd("switch master4")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+...
+test_run:cmd("switch master2")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+...
+test_run:cmd("switch master5")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+...
+test_run:cmd("switch default")
+---
+- true
+...
+-- stop replica
+test_run:cmd("stop server master1")
+---
+- true
+...
+test_run:cmd("stop server master2")
+---
+- true
+...
+-- add tuples
+for i=11, 20 do shard.demo:insert{i, 'join_test'} end
+---
+...
+-- join replica
+test_run:cmd("create server join1 with script='join/join1.lua', lua_libs='join/lua/shard.lua'")
+---
+- true
+...
+test_run:cmd("start server join1")
+---
+- true
+...
+test_run:cmd("create server join2 with script='join/join2.lua', lua_libs='join/lua/shard.lua'")
+---
+- true
+...
+test_run:cmd("start server join2")
+---
+- true
+...
+status = shard_status()
+---
+...
+status
+---
+- maintenance: []
+  offline:
+  - uri: localhost:33131
+    id: 2
+  - uri: localhost:33132
+    id: 3
+  online:
+  - uri: localhost:33133
+    id: 4
+  - uri: localhost:33130
+    id: 1
+  - uri: localhost:33134
+    id: 5
+  - uri: localhost:33135
+    id: 6
+...
+_ = remote_join(status.offline[1].id)
+---
+...
+_ = remote_join(status.offline[2].id)
+---
+...
+shard_status()
+---
+- maintenance: []
+  offline: []
+  online:
+  - uri: localhost:33133
+    id: 4
+  - uri: localhost:33130
+    id: 1
+  - uri: localhost:33131
+    id: 2
+  - uri: localhost:33134
+    id: 5
+  - uri: localhost:33132
+    id: 3
+  - uri: localhost:33135
+    id: 6
+...
+-- check joined replica
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+  - [13, 'join_test']
+  - [14, 'join_test']
+  - [15, 'join_test']
+  - [20, 'join_test']
+...
+test_run:cmd("switch master3")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+  - [13, 'join_test']
+  - [14, 'join_test']
+  - [15, 'join_test']
+  - [20, 'join_test']
+...
+test_run:cmd("switch master4")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+  - [12, 'join_test']
+  - [17, 'join_test']
+...
+test_run:cmd("switch join1")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+  - [12, 'join_test']
+  - [17, 'join_test']
+...
+test_run:cmd("switch master5")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+  - [11, 'join_test']
+  - [16, 'join_test']
+  - [18, 'join_test']
+  - [19, 'join_test']
+...
+test_run:cmd("switch join2")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+  - [11, 'join_test']
+  - [16, 'join_test']
+  - [18, 'join_test']
+  - [19, 'join_test']
+...
+test_run:cmd("switch default")
+---
+- true
+...
+-- cleanup
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+cluster(function(id)
+    if id ~= '1' and id ~= '2' then
+        _ = test_run:cmd("stop server master"..id)
+    end
+    test_run:cmd("cleanup server master"..id)
+end);
+---
+...
+_ = test_run:cmd("stop server join1")
+test_run:cmd("cleanup server join1")
+_ = test_run:cmd("stop server join2")
+test_run:cmd("cleanup server join2")
+test_run:cmd("setopt delimiter ''");
+---
+...
+test_run:cmd("restart server default with cleanup=1")

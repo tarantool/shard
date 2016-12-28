@@ -1,0 +1,298 @@
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+-- start shards
+cluster(function(id)
+    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua', lua_libs='join/lua/shard.lua'")
+    test_run:cmd("start server master"..id)
+end);
+---
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+shard.wait_connection()
+---
+...
+for i=1, 10 do shard.demo:insert{i, 'test'} end
+---
+...
+-- check data
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master3")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master1")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+...
+test_run:cmd("switch master4")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+...
+test_run:cmd("switch master2")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+...
+test_run:cmd("switch master5")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+...
+test_run:cmd("switch default")
+---
+- true
+...
+-- stop 2 and 3 pairs
+test_run:cmd("stop server master1")
+---
+- true
+...
+test_run:cmd("stop server master4")
+---
+- true
+...
+test_run:cmd("stop server master2")
+---
+- true
+...
+test_run:cmd("stop server master5")
+---
+- true
+...
+status = shard_status()
+---
+...
+_ = remote_unjoin(status.offline[1].id)
+---
+...
+_ = remote_unjoin(status.offline[2].id)
+---
+...
+_ = remote_unjoin(status.offline[3].id)
+---
+...
+_ = remote_unjoin(status.offline[4].id)
+---
+...
+status = shard_status()
+---
+...
+status
+---
+- maintenance:
+  - null
+  - true
+  - true
+  - null
+  - true
+  - true
+  offline:
+  - uri: localhost:33134
+    id: 5
+  - uri: localhost:33131
+    id: 2
+  - uri: localhost:33135
+    id: 6
+  - uri: localhost:33132
+    id: 3
+  online:
+  - uri: localhost:33133
+    id: 4
+  - uri: localhost:33130
+    id: 1
+...
+-- add tuples
+shard.demo:insert{12, 'test_pair'}
+---
+- - status: false
+    error: 'failed to insert on localhost:33131: Peer closed'
+...
+shard.demo:insert{19, 'test_pair'}
+---
+- - status: false
+    error: 'failed to insert on localhost:33132: Peer closed'
+...
+-- start servers
+test_run:cmd("start server master1")
+---
+- true
+...
+test_run:cmd("start server master4")
+---
+- true
+...
+test_run:cmd("start server master2")
+---
+- true
+...
+test_run:cmd("start server master5")
+---
+- true
+...
+_ = remote_join(status.offline[2].id)
+---
+...
+_ = remote_join(status.offline[1].id)
+---
+...
+_ = remote_join(status.offline[4].id)
+---
+...
+_ = remote_join(status.offline[3].id)
+---
+...
+shard_status()
+---
+- maintenance: []
+  offline: []
+  online:
+  - uri: localhost:33133
+    id: 4
+  - uri: localhost:33130
+    id: 1
+  - uri: localhost:33134
+    id: 5
+  - uri: localhost:33131
+    id: 2
+  - uri: localhost:33135
+    id: 6
+  - uri: localhost:33132
+    id: 3
+...
+shard.demo:insert{12, 'test_pair'}
+---
+- - [12, 'test_pair']
+...
+shard.demo:insert{19, 'test_pair'}
+---
+- - [19, 'test_pair']
+...
+-- check joined replica
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master3")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [1, 'test']
+  - [2, 'test']
+  - [7, 'test']
+  - [8, 'test']
+...
+test_run:cmd("switch master1")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+  - [12, 'test_pair']
+...
+test_run:cmd("switch master4")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [4, 'test']
+  - [5, 'test']
+  - [12, 'test_pair']
+...
+test_run:cmd("switch master2")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+  - [19, 'test_pair']
+...
+test_run:cmd("switch master5")
+---
+- true
+...
+box.space.demo:select()
+---
+- - [3, 'test']
+  - [6, 'test']
+  - [9, 'test']
+  - [10, 'test']
+  - [19, 'test_pair']
+...
+test_run:cmd("switch default")
+---
+- true
+...
+-- cleanup
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+cluster(function(id)
+    _ = test_run:cmd("stop server master"..id)
+    test_run:cmd("cleanup server master"..id)
+end);
+---
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+test_run:cmd("restart server default with cleanup=1")
