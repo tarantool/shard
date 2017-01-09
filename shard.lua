@@ -259,6 +259,11 @@ function unjoin_shard(id)
     return true
 end
 
+-- default on join/unjoin event
+local function on_action(self, msg)
+    log.info(msg)
+end
+
 function cluster_operation(func_name, id)
     local jlog = {}
     local all_ok = true
@@ -289,7 +294,7 @@ function cluster_operation(func_name, id)
                          func_name, id, srd[i].uri
                      )
                      table.insert(jlog, msg)
-                     log.info(msg)
+                     shard_obj:on_action(msg)
                  end
              end
          end
@@ -820,6 +825,7 @@ local function enable_operations()
     shard_obj.q_begin = q_begin
     shard_obj.q_select = q_select
     shard_obj.q_call = q_call
+    shard_obj.on_action = on_action
 
     -- set helpers
     shard_obj.check_operation = check_operation
