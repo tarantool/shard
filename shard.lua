@@ -314,17 +314,17 @@ function remote_unjoin(id)
     return cluster_operation("unjoin_shard", id)
 end
 
--- base remote operation call
-local function single_call(self, space, server, operation, ...)
-    result = nil
+-- base remote operation on space
+local function space_call(self, space, server, fun, ...)
+    local result = nil
     local status, reason = pcall(function(...)
-        self = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
-        result = self[operation](self, ...)
+        local space_obj = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
+        result = fun(space_obj, ...)
     end, ...)
     if not status then
         local err = string.format(
-            'failed to %s on %s: %s',
-            operation, server.uri, reason
+            'failed to execute operation on %s: %s',
+            server.uri, reason
         )
         log.error(err)
         result = {status=false, error=err}
@@ -333,6 +333,21 @@ local function single_call(self, space, server, operation, ...)
         end
     end
     return result
+end
+
+-- primary index wrapper on space_call
+local function single_call(self, space, server, operation, ...)
+    return self:space_call(space, server, function(space_obj, ...)
+        return space_obj[operation](space_obj, ...)
+    end, ...)
+end
+
+local function index_call(self, space, server, operation,
+                          index_no, ...)
+    return self:space_call(space, server, function(space_obj, ...)
+        local index = space_obj.index[index_no]
+        return index[operation](index, ...)
+    end, ...)
 end
 
 local function direct_call(self, server, func_name, ...)
@@ -804,6 +819,8 @@ end
 local function enable_operations()
     -- set base operations
     shard_obj.single_call = single_call
+    shard_obj.space_call = space_call
+    shard_obj.index_call = index_call
     shard_obj.direct_call = direct_call
     shard_obj.request = request
     shard_obj.queue_request = queue_request
@@ -877,6 +894,12 @@ local function enable_operations()
                 end,
                 single_call = function(this, ...)
                     return self.single_call(self, space, ...)
+                end,
+                space_call = function(this, ...)
+                    return self.space_call(self, space, ...)
+                end,
+                index_call = function(this, ...)
+                    return self.index_call(self, space, ...)
                 end
             }
         end
