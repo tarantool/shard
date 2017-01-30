@@ -174,6 +174,57 @@ function shard_status()
     return result
 end
 
+function is_valid_index(name, index_data, index_no, strict)
+    local index = box.space[name].index[index_no]
+    if strict == nil then
+        strict = true
+    end
+
+    if #index.parts ~= #index_data.parts then
+        return false
+    end
+    for i, part in pairs(index.parts) do
+        local to_check = index_data.parts[i]
+        if to_check == nil or
+                part.type ~= to_check.type or
+                part.fieldno ~= to_check.fieldno then
+            return false
+        end
+    end
+
+    if not strict then
+        return true
+    end
+    local check = {
+        'unique', 'id', 'space_id', 'name', 'type'
+    }
+    for _, key in pairs(check) do
+        if index[key] ~= index_data[key] then
+            return false
+        end
+    end
+    return true
+end
+
+function validate_sources(config, strict)
+    for i, space in pairs(config) do
+        if box.space[space.name] == nil then
+            return false
+        end
+        for k,v in pairs(box.space[space.name].index) do
+            if type(k) == 'number' then
+                local is_valid = is_valid_index(
+                    space.name, space.index[k], k, strict
+                )
+                if space.index[k] == nil or not is_valid  then
+                    return false
+                end
+            end
+        end
+    end
+    return true
+end
+
 local function is_shard_connected(uri, conn)
     local try = 1
     while try < 20 do
