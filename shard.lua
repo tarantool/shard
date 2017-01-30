@@ -206,6 +206,39 @@ function is_valid_index(name, index_data, index_no, strict)
     return true
 end
 
+function update_space(space)
+    local obj = box.space[space.name]
+    if obj == nil then
+        return false, 'Space does not exists'
+    end
+    for i, index in pairs(space.index) do
+        if obj.index[index.name] == nil then
+            local parts = {}
+            for _, part in pairs(index.parts) do
+                table.insert(parts, part.fieldno)
+                table.insert(parts, part.type)
+            end
+            obj:create_index(index.name, {
+                unique=index.unique,
+                id=index.id,
+                type=index.type,
+                parts=parts
+            })
+        end
+    end
+end
+
+function create_space(config)
+    for i, space in pairs(config) do
+        if box.space[space.name] ~= nil then
+            return false, 'Space already exists'
+        end
+        _ = box.schema.create_space(space.name, space.options)
+        update_space(space)
+    end
+    return true
+end
+
 function validate_sources(config, strict)
     for i, space in pairs(config) do
         if box.space[space.name] == nil then
