@@ -206,34 +206,155 @@ function is_valid_index(name, index_data, index_no, strict)
     return true
 end
 
+function schema_worker()
+    fiber.name('schema_worker')
+
+    local actions = {
+        create_index = function(entity, args)
+            local s_name, i_name = entity[1], entity[2]
+            box.space[s_name]:create_index(i_name, args)
+        end,
+        create_space = function(entity, args)
+            box.schema.create_space(entity, args)
+        end,
+        drop_index = function(entity, args)
+            local s_name, i_name = entity[1], entity[2]
+            box.space[s_name].index[i_name]:drop()
+        end,
+        drop_space = function(entity, args)
+            box.space[entity]:drop()
+        end
+    }
+    while true do
+        for _, op in box.space.cluster_manager:pairs() do
+            local status, func, entity, args = op[2], op[3], op[4], op[5]
+            if status ~= STATE_HANDLED then
+                local ok, err = pcall(function()
+                    actions[func](entity, args)
+                    box.space.cluster_manager:update(
+                        op[1], {{'=', 2, STATE_HANDLED}}
+                    )
+                end)
+                if not ok then
+                    log.info('Failed to apply schema changes: %s', err)
+                end
+            end
+        end
+
+        fiber.sleep(0.01)
+    end
+end
+
 function update_space(space)
     local obj = box.space[space.name]
-    if obj == nil then
-        return false, 'Space does not exists'
-    end
     for i, index in pairs(space.index) do
-        if obj.index[index.name] == nil then
+        if obj == nil or obj.index[index.name] == nil then
             local parts = {}
             for _, part in pairs(index.parts) do
                 table.insert(parts, part.fieldno)
                 table.insert(parts, part.type)
             end
-            obj:create_index(index.name, {
-                unique=index.unique,
-                id=index.id,
-                type=index.type,
-                parts=parts
-            })
+            box.space.cluster_manager:auto_increment{STATE_NEW, 'create_index',
+                {space.name, index.name}, {
+                    unique=index.unique,
+                    id=index.id,
+                    type=index.type,
+                    parts=parts
+                }
+            }
         end
     end
+    return true
+end
+
+local function rollback(operation)
+    local name, entity, args = operation[3], operation[4], operation[5]
+    local manager = box.space.cluster_manager
+
+    local rollback_actions = {
+        create_space = function()
+            box.space[entity]:drop()
+        end,
+        create_index = function()
+            local s_name, i_name = entity[1], entity[2]
+            box.space[s_name].index[i_name]:drop()
+        end,
+        drop_space = function()
+            -- we don't need to create empty space
+        end,
+        drop_index = function()
+            local s_name, i_name = entity[1], entity[2]
+            local sp = box.space[s_name]
+            if sp ~= nil then
+                sp:create_index(i_name, args)
+            end
+        end
+    }
+    rollback_actions[name]()
+end
+
+function rollback_schema()
+    local manager = box.space.cluster_manager
+    local ops = manager:select({}, {iterator='REQ'})
+    for _, operation in pairs(ops) do
+        rollback(operation)
+    end
+    manager:truncate()
+    return true
+end
+
+function commit_schema()
+    box.space.cluster_manager:truncate()
+    return true
+end
+
+function drop_space(space_name)
+    if box.space[space_name] == nil then
+        return false, 'Space does not exists'
+    end
+    box.space.cluster_manager:auto_increment{
+        STATE_NEW, 'drop_space',
+        space_name
+    }
+    return true
+end
+
+function drop_index(space_name, index_name)
+    local obj = box.space[space_name]
+    if obj == nil then
+        return false, 'Space does not exists'
+    end
+    local index = obj.index[index_name]
+    if index == nil then
+        return false, 'Index does not exists'
+    end
+    local parts = {}
+    for _, part in pairs(index.parts) do
+        table.insert(parts, part.fieldno)
+        table.insert(parts, part.type)
+    end
+    box.space.cluster_manager:auto_increment{STATE_NEW, 'drop_index',
+        {space_name, index_name}, {
+            unique=index.unique,
+            type=index.type,
+            parts=parts
+        }
+    }
+    return true
 end
 
 function create_space(config)
+    local manager = box.space.cluster_manager
+
     for i, space in pairs(config) do
         if box.space[space.name] ~= nil then
             return false, 'Space already exists'
         end
-        _ = box.schema.create_space(space.name, space.options)
+        --_ = box.schema.create_space(space.name, space.options)
+        manager:auto_increment{
+            STATE_NEW, 'create_space',
+            space.name, space.options
+        }
         update_space(space)
     end
     return true
@@ -840,10 +961,18 @@ local function wait_table_fill()
 end
 
 local function create_spaces(cfg)
-    if not box.space.operations then
+    if box.space.operations == nil then
         local operations = box.schema.create_space('operations')
         operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
         operations:create_index('queue', {type = 'tree', parts = {2, 'num', 1, 'str'}})
+    end
+    if box.space.cluster_manager == nil then
+        local cluster_ops = box.schema.create_space('cluster_manager')
+        cluster_ops:create_index('primary', {type = 'tree', parts = {1, 'num'}})
+        cluster_ops:create_index(
+            'status', {type = 'tree', parts = {2, 'num'},
+            unique=false}
+        )
     end
     configuration = cfg
 end
@@ -1015,6 +1144,7 @@ local function init(cfg, callback)
     shard_mapping(pool.servers)
 
     enable_operations()
+    fiber.create(schema_worker)
     log.info('Done')
     init_complete = true
     return true
