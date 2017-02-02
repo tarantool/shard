@@ -129,15 +129,24 @@ queue_mt = {
 
 local maintenance = {}
 
+local function reshard_works()
+    -- FIXME: read state from system space
+    return true
+end
+
 -- main shards search function
-local function shard(key, include_dead)
+local function shard(key, include_dead, use_new)
     local num
     if type(key) == 'number' then
         num = key
     else
         num = digest.crc32(key)
     end
-    local shard = shards[1 + digest.guava(num, shards_n)]
+    local max_shards = shards_n
+    if reshard_works() and not use_new then
+        max_shards = max_shards - 1
+    end
+    local shard = shards[1 + digest.guava(num, max_shards)]
     local res = {}
     local k = 1
     for i = 1, redundancy do
@@ -377,6 +386,88 @@ function validate_sources(config, strict)
         end
     end
     return true
+end
+
+local function space_iteration(space_name)
+    -- drop prev space
+    box.space.sh_worker:truncate()
+    if box.space.sh_worker.index[1] ~= nil then
+        box.space.sh_worker.index[1]:drop()
+    end
+
+    local space = box.space[space_name]
+    local parts = {}
+
+    for i, part in pairs(space.index[0].parts) do
+        -- shift main index for sh_worker space
+        table.insert(parts, part.fieldno + 2)
+        table.insert(parts, part.type)
+    end
+    box.space.sh_worker:create_index(
+        'lookup', {type = 'tree', parts = parts}
+    )
+
+    for _, tuple in space:pairs() do
+        local shard_id = tuple[space.index[0].parts[1].fieldno]
+        if shard(shard_id)[1].id ~= shard(shard_id, false, true)[1].id then
+            local data = {STATE_NEW}
+            for i, part in pairs(space.index[0].parts) do
+                table.insert(data, tuple[part.fieldno])
+            end
+            box.space.sh_worker:auto_increment(data)
+        end
+    end
+
+    return true
+end
+
+function space_resharding(space_name)
+    if box.space.sh_worker:len() > 0 then
+        return false, 'Resharding is not finished'
+    end
+    if box.space[space_name] == nil then
+        return false, "Space does not exists"
+    end
+    return space_iteration(space_name)
+end
+
+function append_shard(servers)
+    if #servers ~= redundancy then
+        return false, 'Amount of servers is not equal redundancy'
+    end
+    -- FIXME: Turn on resharding mode
+    -- add new "virtual" shard and append server
+    shards[shards_n + 1] = {}
+    shards_n = shards_n + 1
+
+    -- connect pair to shard
+    for id, server in pairs(servers) do
+        -- create zone if needed
+        if pool.servers[server.zone] == nil then
+            pool.zones_n = pool.zones_n + 1
+            pool.servers[server.zone] = {
+                id = pool.zones_n, n = 0, list = {}
+            }
+        end
+        -- disable new shard by default
+        server.ignore = true
+        -- append server to connection pool
+        pool:connect(id, server)
+        local zone = pool.servers[server.zone]
+        table.insert(shards[shards_n], zone.list[zone.n])
+    end
+    return true
+end
+
+function get_zones()
+    local result = {}
+    for z_name, zone in pairs(shards) do
+        result[z_name] = {}
+        for _, server in pairs(zone) do
+            table.insert(result[z_name], server.uri)
+        end
+    end
+    return result
 end
 
 local function is_shard_connected(uri, conn)
@@ -973,6 +1064,10 @@ local function create_spaces(cfg)
             'status', {type = 'tree', parts = {2, 'num'},
             unique=false}
         )
+    end
+    if box.space.sh_worker == nil then
+        local sh_space = box.schema.create_space('sh_worker')
+        sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
     end
     configuration = cfg
 end
