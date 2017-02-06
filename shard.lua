@@ -130,8 +130,15 @@ queue_mt = {
 local maintenance = {}
 
 local function reshard_works()
-    -- FIXME: read state from system space
-    return true
+    -- check that resharing started (used by shard function)
+    local mode = box.space.sharding:get{'RESHARDING'}
+    return mode ~= nil and mode[2] > 0
+end
+
+local function reshard_ready()
+    -- check that new nodes are connected after resharing start
+    local mode = box.space.sharding:get{'RESHARDING'}
+    return mode ~= nil and mode[2] > 1
 end
 
 -- main shards search function
@@ -388,11 +395,16 @@ function validate_sources(config, strict)
     return true
 end
 
-local function space_iteration(space_name)
+local function space_iteration()
+    local mode = box.space.sharding:get('CUR_SPACE')
+    if mode == nil then
+        return
+    end
+    local space_name = mode[2]
     -- drop prev space
     box.space.sh_worker:truncate()
-    if box.space.sh_worker.index[1] ~= nil then
-        box.space.sh_worker.index[1]:drop()
+    if box.space.sh_worker.index[2] ~= nil then
+        box.space.sh_worker.index[2]:drop()
     end
 
     local space = box.space[space_name]
@@ -421,21 +433,82 @@ local function space_iteration(space_name)
     return true
 end
 
-function space_resharding(space_name)
-    if box.space.sh_worker:len() > 0 then
-        return false, 'Resharding is not finished'
+local function contains(arr, elem)
+    for _, item in pairs(arr) do
+        if item == elem then
+            return true
+        end
     end
-    if box.space[space_name] == nil then
-        return false, "Space does not exists"
+    return false
+end
+
+local function is_reshardable(space_name)
+    if string.sub(space_name, 1, 1) == '_' then
+        return false
     end
-    return space_iteration(space_name)
+    local reserved = {operations=1, sharding=1, sh_worker=1, cluster_manager=1}
+    return reserved[space_name] == nil
+end
+
+local function resharding_worker()
+    fiber.name('resharding')
+    box.space.sharding:replace{'HANDLED_SPACES', {}}
+    box.space.sharding:replace{'CUR_SPACE', ''}
+    while true do
+        if reshard_ready() then
+            local handled = box.space.sharding:get{'HANDLED_SPACES'}[2]
+            local new_tasks =  box.space.sh_worker.index[1]:count{STATE_NEW}
+            local ok_tasks = box.space.sh_worker.index[1]:count{STATE_HANDLED}
+            local len = box.space.sh_worker:len()
+            local cur_space = box.space.sharding:get('CUR_SPACE')[2]
+
+            -- resharding finished, we can switch to the next space
+            if new_tasks == 0 and (len == 0 or ok_tasks == len) then
+                local has_new_space = false
+                for _, obj in pairs(box.space) do
+                    local space_name = obj.name
+                    if is_reshardable(space_name) and
+                            not contains(handled, space_name) then
+                        -- cleanup all worker space
+                        box.space.sh_worker:truncate()
+                        -- update handled spaces list
+                        -- we must check twise space
+                        if cur_space ~= space_name then
+                            if cur_space ~= '' then
+                                table.insert(handled, cur_space)
+                                box.space.sharding:replace{'HANDLED_SPACES', handled}
+                            end
+                            -- set current reshadring pointer to this space
+                            box.space.sharding:replace{"CUR_SPACE", space_name}
+                            has_new_space = true
+                            break
+                        end
+                    end
+                end
+                if not has_new_space then
+                    log.info('Resharding complete')
+                    -- instance complete, we can turn off
+                    -- resharing mode
+                    box.space.sharding:replace{"RESHARDING", 0}
+                    box.space.sharding:replace{'HANDLED_SPACES', {}}
+                    box.space.sharding:replace{'CUR_SPACE', ''}
+                end
+            end
+            if reshard_ready() then
+                space_iteration()
+            end
+        end
+
+        fiber.sleep(0.01)
+    end
 end
 
 function append_shard(servers)
     if #servers ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
-    -- FIXME: Turn on resharding mode
+    -- Turn on resharding mode
+    box.space.sharding:replace{"RESHARDING", 1}
     -- add new "virtual" shard and append server
     shards[shards_n + 1] = {}
     shards_n = shards_n + 1
@@ -450,12 +523,13 @@ function append_shard(servers)
             }
         end
         -- disable new shard by default
-        server.ignore = true
+        --server.ignore = true
         -- append server to connection pool
         pool:connect(id, server)
         local zone = pool.servers[server.zone]
         table.insert(shards[shards_n], zone.list[zone.n])
     end
+    box.space.sharding:replace{"RESHARDING", 2}
     return true
 end
 
@@ -1068,6 +1142,12 @@ local function create_spaces(cfg)
     if box.space.sh_worker == nil then
         local sh_space = box.schema.create_space('sh_worker')
         sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
+        sh_space:create_index('status', {type = 'tree', parts = {2, 'num'}, unique=false})
+    end
+    -- sharding manager settings
+    if box.space.sharding == nil then
+        local sharding = box.schema.create_space('sharding')
+        sharding:create_index('primary', {type = 'tree', parts = {1, 'str'}})
     end
     configuration = cfg
 end
@@ -1240,6 +1320,7 @@ local function init(cfg, callback)
 
     enable_operations()
     fiber.create(schema_worker)
+    fiber.create(resharding_worker)
     log.info('Done')
     init_complete = true
     return true
