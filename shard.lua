@@ -141,6 +141,22 @@ local function reshard_ready()
     return mode ~= nil and mode[2] > 1
 end
 
+local function lock_transfer()
+    box.space.sharding:replace{'TRANSFER_LOCK', 1}
+end
+
+local function unlock_transfer()
+    box.space.sharding:replace{'TRANSFER_LOCK', 0}
+end
+
+local function is_transfer_locked()
+    local lock = box.space.sharding:get{'TRANSFER_LOCK'}
+    if lock == nil then
+        return false
+    end
+    return lock[2] > 0
+end
+
 -- main shards search function
 local function shard(key, include_dead, use_new)
     local num
@@ -400,6 +416,11 @@ local function space_iteration()
     if mode == nil then
         return
     end
+    -- wait for until current transfer is working
+    while is_transfer_locked() do
+        fiber.sleep(0.001)
+    end
+
     local space_name = mode[2]
     -- drop prev space
     box.space.sh_worker:truncate()
@@ -450,10 +471,50 @@ local function is_reshardable(space_name)
     return reserved[space_name] == nil
 end
 
+local function transfer_worker(self)
+    fiber.name('transfer')
+    while true do
+        if reshard_ready() then
+            local cur_space = box.space.sharding:get('CUR_SPACE')
+            local worker = box.space.sh_worker
+            lock_transfer()
+            if cur_space ~= nil and cur_space[2] ~= ''
+                    and worker.index[1] ~= nil and worker.index[2] ~= nil then
+                local space = box.space[cur_space[2]]
+                for _, meta in worker.index[1]:pairs({STATE_NEW}) do
+                    local index = {}
+                    for i=3,#meta do
+                        table.insert(index, meta[i])
+                    end
+                    log.info(require('yaml').encode(index))
+                    local tuple = space:get(index)
+                    local ok, err = pcall(function()
+                        local nodes = shard(tuple[1], false, true)
+                        self:single_call(cur_space[2], nodes[1], 'replace', tuple)
+                    end)
+                    if ok then
+                        box.begin()
+                        worker:update({meta[1]}, {{'=', 2, STATE_HANDLED}})
+                        space:delete(index)
+                        box.commit()
+                    end
+                end
+            end
+            unlock_transfer()
+        end
+        fiber.sleep(0.01)
+    end
+end
+
 local function resharding_worker()
     fiber.name('resharding')
-    box.space.sharding:replace{'HANDLED_SPACES', {}}
-    box.space.sharding:replace{'CUR_SPACE', ''}
+    local state = box.space.sharding
+    local rs_state = state:get('RESHARDING')
+    if rs_state == nil or rs_state[2] == 0 then
+        box.space.sharding:replace{'HANDLED_SPACES', {}}
+        box.space.sharding:replace{'CUR_SPACE', ''}
+        unlock_transfer()
+    end
     while true do
         if reshard_ready() then
             local handled = box.space.sharding:get{'HANDLED_SPACES'}[2]
@@ -1321,6 +1382,7 @@ local function init(cfg, callback)
     enable_operations()
     fiber.create(schema_worker)
     fiber.create(resharding_worker)
+    fiber.create(transfer_worker, shard_obj)
     log.info('Done')
     init_complete = true
     return true
