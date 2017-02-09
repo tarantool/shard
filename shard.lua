@@ -158,7 +158,7 @@ local function is_transfer_locked()
 end
 
 -- main shards search function
-local function shard(key, include_dead, use_new)
+local function shard(key, include_dead, use_old)
     local num
     if type(key) == 'number' then
         num = key
@@ -166,7 +166,7 @@ local function shard(key, include_dead, use_new)
         num = digest.crc32(key)
     end
     local max_shards = shards_n
-    if reshard_works() and not use_new then
+    if reshard_works() and use_old then
         max_shards = max_shards - 1
     end
     local shard = shards[1 + digest.guava(num, max_shards)]
@@ -486,15 +486,15 @@ local function transfer_worker(self)
                     for i=3,#meta do
                         table.insert(index, meta[i])
                     end
-                    log.info(require('yaml').encode(index))
+                    worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
                     local tuple = space:get(index)
                     local ok, err = pcall(function()
-                        local nodes = shard(tuple[1], false, true)
+                        local nodes = shard(tuple[1])
                         self:single_call(cur_space[2], nodes[1], 'replace', tuple)
                     end)
                     if ok then
                         box.begin()
-                        worker:update({meta[1]}, {{'=', 2, STATE_HANDLED}})
+                        worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
                         space:delete(index)
                         box.commit()
                     end
@@ -796,11 +796,108 @@ local function direct_call(self, server, func_name, ...)
     return result
 end
 
+local function lookup(self, space, tuple_id, ...)
+    local q_args = {...}
+    local key = {}
+    if #q_args > 0 then
+        key = q_args[1]
+    else
+        return false, 'Wrong params'
+    end
+
+    -- try to find in new shard
+    local nodes = shard(tuple_id)
+    local new_data = single_call(self, space, nodes[1], 'select', key)
+    if #new_data > 0 then
+        -- tuple transfer complete, we can use new shard for this request
+        return nodes
+    end
+
+    local old_nodes = shard(tuple_id, false, true)
+    local old_data = single_call(self, space, old_nodes[1], 'select', key)
+    if #old_data == 0 then
+        -- tuple not found in old shard:
+        -- 1. it does not exists
+        -- 2. space transfer complete and in moved to new shard
+        -- Conclusion: we need to execute request in new shard
+        return nodes
+    end
+
+    -- tuple was found let's check transfer state
+    local result = index_call(
+        self, 'sharding', old_nodes[1],
+        'select', 3, key
+    )
+    if #result == 0 then
+        -- we must use old shard
+        -- FIXME: probably prev iteration is finished
+        -- and we need to check CUR_SPACE or sharding:len()
+        return old_nodes
+    end
+
+    if result[1][2] == STATE_INPROGRESS then
+        -- transfer started, we mast wait for transfer
+        local res = direct_call(
+            self, old_nodes[1],
+            'transfer_wait', space, key
+        )
+    end
+    -- transfer complete we can execute request in new shard
+    return nodes
+end
+
+local function is_transfered_space(space)
+    local mode = box.space.sharding:get('CUR_SPACE')
+    if mode == nil or mode[2] ~= space then
+        return false
+    end
+    return true
+end
+
+--function ch_select(space, key)
+--    return shard_obj[space]:select(key)
+--end
+
+function transfer_wait(space, key)
+    if not reshard_works() then
+        return false
+    end
+
+    local result = {}
+    while result ~= nil or result[2] ~= STATE_HANDLED do
+        -- if space transfer is finished we don't need to wait
+        if not is_transfered_space(space) then
+            return true
+        end
+        local ok, err = pcall(function()
+            result = box.space.sharding.index[3]:get(key)
+        end)
+        if not ok then
+            -- if transfer finished it's not error
+            -- but index can be dropped
+            if not is_transfered_space(space) then
+                return true
+            end
+            return false, err
+        end
+        fiber.sleep(0.01)
+    end
+    return true
+end
+
 -- shards request function
 local function request(self, space, operation, tuple_id, ...)
     local result = {}
+    local nodes = {}
+    if operation == 'insert' or not reshard_works() then
+        nodes = shard(tuple_id)
+    else
+        -- check where is the tuple
+        nodes = lookup(self, space, tuple_id, ...)
+    end
+
     k = 1
-    for i, server in ipairs(shard(tuple_id)) do
+    for i, server in ipairs(nodes) do
         result[k] = single_call(self, space, server, operation, ...)
         k = k + 1
         if configuration.replication == true then
