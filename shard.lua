@@ -564,12 +564,54 @@ local function resharding_worker()
     end
 end
 
-function append_shard(servers)
+function remote_append(servers)
+    return cluster_operation('append_shard', servers)
+end
+
+function remote_resharding_state()
+    local result = {}
+    for j=1, #shards do
+         local srd =shards[j]
+         for i=1, redundancy do
+                 local res = {uri=srd[i].uri}
+                 local ok, err = pcall(function()
+                     local conn = srd[i].conn
+                     res.data = conn[nb_call](
+                         conn, 'resharding_status'
+                     )
+                end)
+                table.insert(result, res)
+         end
+    end
+    return result
+end
+
+function resharding_status()
+    local status = box.space.sharding:get{'RESHARDING'}
+    if status ~= nil then
+        status = status[2] == 2
+    else
+        status = false
+    end
+    local spaces = box.space.sharding:get{'HANDLED_SPACES'}[2]
+    local current = box.space.sharding:get{'CUR_SPACE'}[2]
+    local worker_len = box.space.sh_worker:len()
+    return {
+        status=status,
+        spaces=spaces,
+        in_progress=current,
+        tasks=worker_len
+    }
+end
+
+function append_shard(servers, is_replica)
     if #servers ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
     -- Turn on resharding mode
-    box.space.sharding:replace{"RESHARDING", 1}
+    if not is_replica then
+        box.space.sharding:replace{"RESHARDING", 1}
+    end
     -- add new "virtual" shard and append server
     shards[shards_n + 1] = {}
     shards_n = shards_n + 1
@@ -590,7 +632,9 @@ function append_shard(servers)
         local zone = pool.servers[server.zone]
         table.insert(shards[shards_n], zone.list[zone.n])
     end
-    box.space.sharding:replace{"RESHARDING", 2}
+    if not is_replica then
+        box.space.sharding:replace{"RESHARDING", 2}
+    end
     return true
 end
 
@@ -695,9 +739,17 @@ local function on_action(self, msg)
     log.info(msg)
 end
 
-function cluster_operation(func_name, id)
+function cluster_operation(func_name, ...)
     local jlog = {}
+    local q_args = {...}
     local all_ok = true
+
+    -- we need to check shard id for direct operations
+    local id = nil
+    if type(q_args[1]) == 'number' then
+        id = q_args[1]
+    end
+
     for j=1, #shards do
          local srd =shards[j]
          for i=1, redundancy do
@@ -706,10 +758,11 @@ function cluster_operation(func_name, id)
                  local ok, err = pcall(function()
                      log.info(
                          "Trying to '%s' shard %d with shard %s",
-                         func_name, id, srd[i].uri
+                         func_name, srd[i].id, srd[i].uri
                      )
                      local conn = srd[i].conn
-                     result = conn[nb_call](conn, func_name, id)[1][1]
+                     local is_replica = i == 1
+                     result = conn[nb_call](conn, func_name, unpack(q_args), is_replica)[1][1]
                  end)
                  if not ok or not result then
                      local msg = string.format(
@@ -722,7 +775,7 @@ function cluster_operation(func_name, id)
                  else
                      local msg = string.format(
                          "Operaion '%s' for shard %d in node '%s' applied",
-                         func_name, id, srd[i].uri
+                         func_name, srd[i].id, srd[i].uri
                      )
                      table.insert(jlog, msg)
                      shard_obj:on_action(msg)
