@@ -1530,9 +1530,6 @@ local function init(cfg, callback)
     shard_mapping(pool.servers)
 
     enable_operations()
-    fiber.create(schema_worker)
-    fiber.create(resharding_worker)
-    fiber.create(transfer_worker, shard_obj)
     log.info('Done')
     init_complete = true
     return true
@@ -1593,6 +1590,12 @@ shard_obj = {
     init = init,
     shard = shard,
     check_shard = check_shard,
+    enable_resharding = function(self)
+        fiber.create(schema_worker)
+        fiber.create(resharding_worker)
+        fiber.create(transfer_worker, self)
+        log.info('Enabled resharding workers')
+    end
 }
 
 return shard_obj
