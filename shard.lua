@@ -834,6 +834,70 @@ local function index_call(self, space, server, operation,
     end, ...)
 end
 
+function merge_sort(results, index_fields, limits, cut_index)
+    local result = {}
+    if cut_index == nil then
+        cut_index = {}
+    end
+    -- sort by all key parts
+    for _, part in pairs(index_fields) do
+        -- by current SPEC we always use DESC ordering
+        table.sort(results, function(a,b)
+            return a[part.fieldno] > b[part.fieldno]
+        end)
+    end
+    for i, tuple in pairs(results) do
+        local insert = true
+        for j, elem in pairs(cut_index) do
+            local part = index_fields[j]
+            insert = insert and tuple[part.fieldno] == elem
+        end
+        if insert then
+            table.insert(result, tuple)
+        end
+
+        -- check limit condition
+        if #result >= limits.limit then
+            break
+        end
+    end
+    return result
+end
+
+local function secondary_select(self, space, index_no,
+                                index, limits, key)
+    local results = {}
+    local index_fields = nil
+    for i=1, #shards do
+        local j = #shards[i]
+        local srd = shards[i][j]
+        if index_fields == nil then
+            local schema = srd.conn.space[space]
+            index_fields = schema.index[index_no].parts
+        end
+        local part = index_call(
+            self, space, srd, 'select',
+            index_no, index, limits
+        )
+
+        while part == nil and j >= 0 do
+            j = j - 1
+            srd = self.shard.shards[i][j]
+            part = index_call(
+                self, space, srd, 'select',
+                index_no, index, limits
+            )
+        end
+
+        for _, elem in pairs(part) do
+            table.insert(results, elem)
+        end
+    end
+    -- merge queries
+    results = merge_sort(results, index_fields, limits, key)
+    return results
+end
+
 local function direct_call(self, server, func_name, ...)
     local result = nil
     local status, reason = pcall(function(...)
@@ -1420,6 +1484,7 @@ local function enable_operations()
     shard_obj.single_call = single_call
     shard_obj.space_call = space_call
     shard_obj.index_call = index_call
+    shard_obj.secondary_select = secondary_select
     shard_obj.direct_call = direct_call
     shard_obj.request = request
     shard_obj.queue_request = queue_request
@@ -1499,6 +1564,9 @@ local function enable_operations()
                 end,
                 index_call = function(this, ...)
                     return self.index_call(self, space, ...)
+                end,
+                secondary_select = function(this, ...)
+                    return self.secondary_select(self, space, ...)
                 end
             }
         end
