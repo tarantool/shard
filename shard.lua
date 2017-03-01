@@ -17,6 +17,7 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 210
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
+local RESHARDING_RPS = 1000
 local RECONNECT_AFTER = msgpack.NULL
 
 local pool = lib_pool.new()
@@ -411,36 +412,38 @@ function validate_sources(config, strict)
     return true
 end
 
-local function space_iteration()
+local function space_iteration(is_drop)
     local mode = box.space.sharding:get('CUR_SPACE')
     if mode == nil then
         return
     end
     -- wait for until current transfer is working
-    while is_transfer_locked() do
+    while is_drop and is_transfer_locked() do
         fiber.sleep(0.001)
     end
 
     local space_name = mode[2]
-    -- drop prev space
-    box.space.sh_worker:truncate()
-    if box.space.sh_worker.index[2] ~= nil then
-        box.space.sh_worker.index[2]:drop()
-    end
-
     local space = box.space[space_name]
-    local parts = {}
+    -- drop prev space
+    if is_drop then
+        box.space.sh_worker:truncate()
+        if box.space.sh_worker.index[2] ~= nil then
+            box.space.sh_worker.index[2]:drop()
+        end
 
-    for i, part in pairs(space.index[0].parts) do
-        -- shift main index for sh_worker space
-        table.insert(parts, part.fieldno + 2)
-        table.insert(parts, part.type)
+        local parts = {}
+        for i, part in pairs(space.index[0].parts) do
+            -- shift main index for sh_worker space
+            table.insert(parts, part.fieldno + 2)
+            table.insert(parts, part.type)
+        end
+        box.space.sh_worker:create_index(
+            'lookup', {type = 'tree', parts = parts}
+        )
     end
-    box.space.sh_worker:create_index(
-        'lookup', {type = 'tree', parts = parts}
-    )
-
+    local i = 0
     for _, tuple in space:pairs() do
+        i = i + 1
         local shard_id = tuple[space.index[0].parts[1].fieldno]
         if shard(shard_id)[1].id ~= shard(shard_id, false, true)[1].id then
             local data = {STATE_NEW}
@@ -448,6 +451,12 @@ local function space_iteration()
                 table.insert(data, tuple[part.fieldno])
             end
             box.space.sh_worker:auto_increment(data)
+        end
+
+        -- do not use 100% CPU
+        if i == RESHARDING_RPS then
+            i = 0
+            fiber.sleep(0.1)
         end
     end
 
@@ -523,6 +532,7 @@ local function resharding_worker()
             local len = box.space.sh_worker:len()
             local cur_space = box.space.sharding:get('CUR_SPACE')[2]
 
+            local is_drop = false
             -- resharding finished, we can switch to the next space
             if new_tasks == 0 and (len == 0 or ok_tasks == len) then
                 local has_new_space = false
@@ -542,6 +552,7 @@ local function resharding_worker()
                             -- set current reshadring pointer to this space
                             box.space.sharding:replace{"CUR_SPACE", space_name}
                             has_new_space = true
+                            is_drop = true
                             break
                         end
                     end
@@ -556,7 +567,7 @@ local function resharding_worker()
                 end
             end
             if reshard_ready() then
-                space_iteration()
+                space_iteration(is_drop)
             end
         end
 
@@ -595,7 +606,7 @@ function resharding_status()
     end
     local spaces = box.space.sharding:get{'HANDLED_SPACES'}[2]
     local current = box.space.sharding:get{'CUR_SPACE'}[2]
-    local worker_len = box.space.sh_worker:len()
+    local worker_len = box.space.sh_worker.index[1]:count(STATE_NEW)
     return {
         status=status,
         spaces=spaces,
@@ -1596,6 +1607,7 @@ local function init(cfg, callback)
 
     -- servers mappng
     shard_mapping(pool.servers)
+    RESHARDING_RPS = cfg.rsd_max_rps or RESHARDING_RPS
 
     enable_operations()
     log.info('Done')
