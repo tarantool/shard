@@ -167,7 +167,8 @@ local function shard(key, include_dead, use_old)
         num = digest.crc32(key)
     end
     local max_shards = shards_n
-    if reshard_works() and use_old then
+    -- if we want to find shard in old mapping
+    if use_old then
         max_shards = max_shards - 1
     end
     local shard = shards[1 + digest.guava(num, max_shards)]
@@ -426,22 +427,38 @@ local function space_iteration(is_drop)
     local space = box.space[space_name]
     -- drop prev space
     if is_drop then
-        box.space.sh_worker:truncate()
-        if box.space.sh_worker.index[2] ~= nil then
-            box.space.sh_worker.index[2]:drop()
+        lock_transfer()
+        local worker = box.space.sh_worker
+        if worker.index[2] ~= nil then
+            worker.index[2]:drop()
+        end
+        --worker:truncate()
+        local i = 0
+        for _, w_tuple in worker:pairs() do
+            i = i + 1
+            worker:delete{w_tuple[1]}
+            if i % 10000 == 0 then
+                fiber.sleep(0.01)
+            end
         end
 
         local parts = {}
         for i, part in pairs(space.index[0].parts) do
             -- shift main index for sh_worker space
-            table.insert(parts, part.fieldno + 2)
+            table.insert(parts, i + 2)
             table.insert(parts, part.type)
         end
-        box.space.sh_worker:create_index(
-            'lookup', {type = 'tree', parts = parts}
-        )
+        if worker.index.lookup == nil then
+            worker:create_index(
+                'lookup', {type = 'tree', parts = parts}
+            )
+        end
+        unlock_transfer()
     end
     local i = 0
+    local lookup = box.space.sh_worker.index.lookup
+    log.info('Space iteration for space %s', space_name)
+    local tuples = 0
     for _, tuple in space:pairs() do
         i = i + 1
         local shard_id = tuple[space.index[0].parts[1].fieldno]
@@ -451,6 +468,7 @@ local function space_iteration(is_drop)
                 table.insert(data, tuple[part.fieldno])
             end
             box.space.sh_worker:auto_increment(data)
+            tuples = tuples +1
         end
 
         -- do not use 100% CPU
@@ -459,6 +477,8 @@ local function space_iteration(is_drop)
             fiber.sleep(0.1)
         end
     end
+    log.info('Found %d tuples', tuples)
+    box.space.sharding:replace{'FINISHED_SPACE', space_name}
 
     return true
 end
@@ -476,13 +496,22 @@ local function is_reshardable(space_name)
     if string.sub(space_name, 1, 1) == '_' then
         return false
     end
-    local reserved = {operations=1, sharding=1, sh_worker=1, cluster_manager=1}
+    if box.space[space_name]:count() == 0 then
+        return false
+    end
+    local reserved = {
+        operations=1, sharding=1,
+        sh_worker=1, cluster_manager=1
+    }
     return reserved[space_name] == nil
 end
 
 local function transfer_worker(self)
     fiber.name('transfer')
     while true do
+        while is_transfer_locked() do
+            fiber.sleep(0.001)
+        end
         if reshard_ready() then
             local cur_space = box.space.sharding:get('CUR_SPACE')
             local worker = box.space.sh_worker
@@ -506,6 +535,8 @@ local function transfer_worker(self)
                         worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
                         space:delete(index)
                         box.commit()
+                    else
+                        log.info('Transfer error: %s', err)
                     end
                 end
             end
@@ -522,6 +553,7 @@ local function resharding_worker()
     if rs_state == nil or rs_state[2] == 0 then
         box.space.sharding:replace{'HANDLED_SPACES', {}}
         box.space.sharding:replace{'CUR_SPACE', ''}
+        box.space.sharding:replace{'FINISHED_SPACE', ''}
         unlock_transfer()
     end
     while true do
@@ -529,23 +561,27 @@ local function resharding_worker()
             local handled = box.space.sharding:get{'HANDLED_SPACES'}[2]
             local new_tasks =  box.space.sh_worker.index[1]:count{STATE_NEW}
             local ok_tasks = box.space.sh_worker.index[1]:count{STATE_HANDLED}
-            local len = box.space.sh_worker:len()
             local cur_space = box.space.sharding:get('CUR_SPACE')[2]
+            local finished = box.space.sharding:get('FINISHED_SPACE')[2]
+            local len = box.space.sh_worker:len()
 
             local is_drop = false
             -- resharding finished, we can switch to the next space
-            if new_tasks == 0 and (len == 0 or ok_tasks == len) then
+            if finished == cur_space and new_tasks == 0
+                   and (len == 0 or ok_tasks == len) then
                 local has_new_space = false
                 for _, obj in pairs(box.space) do
                     local space_name = obj.name
                     if is_reshardable(space_name) and
                             not contains(handled, space_name) then
-                        -- cleanup all worker space
-                        box.space.sh_worker:truncate()
                         -- update handled spaces list
                         -- we must check twise space
                         if cur_space ~= space_name then
                             if cur_space ~= '' then
+                                space_iteration(false)
+                                while box.space.sh_worker.index[1]:count(STATE_NEW) > 0 do
+                                    fiber.sleep(0.1)
+                                end
                                 table.insert(handled, cur_space)
                                 box.space.sharding:replace{'HANDLED_SPACES', handled}
                             end
@@ -557,17 +593,24 @@ local function resharding_worker()
                         end
                     end
                 end
+                while is_transfer_locked() do
+                    fiber.sleep(0.1)
+                end
                 if not has_new_space then
+                    space_iteration(false)
+                    while box.space.sh_worker.index[1]:count(STATE_NEW) > 0 do
+                        fiber.sleep(0.1)
+                    end
                     log.info('Resharding complete')
                     -- instance complete, we can turn off
                     -- resharing mode
                     box.space.sharding:replace{"RESHARDING", 0}
                     box.space.sharding:replace{'HANDLED_SPACES', {}}
                     box.space.sharding:replace{'CUR_SPACE', ''}
+                    box.space.sharding:replace{'FINISHED_SPACE', ''}
+                else
+                    space_iteration(is_drop)
                 end
-            end
-            if reshard_ready() then
-                space_iteration(is_drop)
             end
         end
 
@@ -639,7 +682,7 @@ function append_shard(servers, is_replica)
         -- disable new shard by default
         --server.ignore = true
         -- append server to connection pool
-        pool:connect(id, server)
+        pool:connect(shards_n*redundancy - id + 1, server)
         local zone = pool.servers[server.zone]
         table.insert(shards[shards_n], zone.list[zone.n])
     end
