@@ -509,9 +509,6 @@ end
 local function transfer_worker(self)
     fiber.name('transfer')
     while true do
-        while is_transfer_locked() do
-            fiber.sleep(0.001)
-        end
         if reshard_ready() then
             local cur_space = box.space.sharding:get('CUR_SPACE')
             local worker = box.space.sh_worker
