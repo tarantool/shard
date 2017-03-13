@@ -891,12 +891,14 @@ function merge_sort(results, index_fields, limits, cut_index)
         cut_index = {}
     end
     -- sort by all key parts
-    for _, part in pairs(index_fields) do
-        -- by current SPEC we always use DESC ordering
-        table.sort(results, function(a,b)
-            return a[part.fieldno] > b[part.fieldno]
-        end)
-    end
+    table.sort(results, function(a ,b)
+        for i, part in pairs(index_fields) do
+            if a[part.fieldno] ~= b[part.fieldno] then
+                return a[part.fieldno] > b[part.fieldno]
+            end
+        end
+        return false
+    end)
     for i, tuple in pairs(results) do
         local insert = true
         for j, elem in pairs(cut_index) do
