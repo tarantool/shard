@@ -496,7 +496,11 @@ local function is_reshardable(space_name)
     if string.sub(space_name, 1, 1) == '_' then
         return false
     end
-    if box.space[space_name]:count() == 0 then
+    -- FIXME: implement vinyl support
+    if box.space[space_name].engine ~= 'memtx' then
+        return false
+    end
+    if box.space[space_name]:len() == 0 then
         return false
     end
     local reserved = {
@@ -543,29 +547,50 @@ local function transfer_worker(self)
     end
 end
 
+local function wait_state(state)
+    local index = box.space.sh_worker.index.status
+    local iter = index:pairs(state)
+    while iter.gen(iter.param, iter.state) ~= nil do
+        fiber.sleep(0.1)
+    end
+end
+
+local function rsd_init()
+    local sh = box.space.sharding
+    sh:replace{'HANDLED_SPACES', {}}
+    sh:replace{'CUR_SPACE', ''}
+    sh:replace{'FINISHED_SPACE', ''}
+    unlock_transfer()
+end
+
+local function rsd_finalize()
+    space_iteration(false)
+    wait_state(STATE_NEW)
+
+    log.info('Resharding complete')
+    local sh = box.space.sharding
+    sh:replace{"RESHARDING", 0}
+    sh:replace{'HANDLED_SPACES', {}}
+    sh:replace{'CUR_SPACE', ''}
+    sh:replace{'FINISHED_SPACE', ''}
+end
+
 local function resharding_worker()
     fiber.name('resharding')
-    local state = box.space.sharding
-    local rs_state = state:get('RESHARDING')
+    local sh = box.space.sharding
+    local rs_state = sh:get('RESHARDING')
     if rs_state == nil or rs_state[2] == 0 then
-        box.space.sharding:replace{'HANDLED_SPACES', {}}
-        box.space.sharding:replace{'CUR_SPACE', ''}
-        box.space.sharding:replace{'FINISHED_SPACE', ''}
-        unlock_transfer()
+        rsd_init()
     end
+
     while true do
         if reshard_ready() then
-            local handled = box.space.sharding:get{'HANDLED_SPACES'}[2]
-            local new_tasks =  box.space.sh_worker.index[1]:count{STATE_NEW}
-            local ok_tasks = box.space.sh_worker.index[1]:count{STATE_HANDLED}
-            local cur_space = box.space.sharding:get('CUR_SPACE')[2]
-            local finished = box.space.sharding:get('FINISHED_SPACE')[2]
-            local len = box.space.sh_worker:len()
+            local handled = sh:get{'HANDLED_SPACES'}[2]
+            local cur_space = sh:get('CUR_SPACE')[2]
+            local finished = sh:get('FINISHED_SPACE')[2]
 
-            local is_drop = false
             -- resharding finished, we can switch to the next space
-            if finished == cur_space and new_tasks == 0
-                   and (len == 0 or ok_tasks == len) then
+            if finished == cur_space then
                 local has_new_space = false
                 for _, obj in pairs(box.space) do
                     local space_name = obj.name
@@ -576,16 +601,13 @@ local function resharding_worker()
                         if cur_space ~= space_name then
                             if cur_space ~= '' then
                                 space_iteration(false)
-                                while box.space.sh_worker.index[1]:count(STATE_NEW) > 0 do
-                                    fiber.sleep(0.1)
-                                end
+                                wait_state(STATE_NEW)
                                 table.insert(handled, cur_space)
-                                box.space.sharding:replace{'HANDLED_SPACES', handled}
+                                sh:replace{'HANDLED_SPACES', handled}
                             end
                             -- set current reshadring pointer to this space
-                            box.space.sharding:replace{"CUR_SPACE", space_name}
+                            sh:replace{"CUR_SPACE", space_name}
                             has_new_space = true
-                            is_drop = true
                             break
                         end
                     end
@@ -594,19 +616,9 @@ local function resharding_worker()
                     fiber.sleep(0.1)
                 end
                 if not has_new_space then
-                    space_iteration(false)
-                    while box.space.sh_worker.index[1]:count(STATE_NEW) > 0 do
-                        fiber.sleep(0.1)
-                    end
-                    log.info('Resharding complete')
-                    -- instance complete, we can turn off
-                    -- resharing mode
-                    box.space.sharding:replace{"RESHARDING", 0}
-                    box.space.sharding:replace{'HANDLED_SPACES', {}}
-                    box.space.sharding:replace{'CUR_SPACE', ''}
-                    box.space.sharding:replace{'FINISHED_SPACE', ''}
+                    rsd_finalize()
                 else
-                    space_iteration(is_drop)
+                    space_iteration(true)
                 end
             end
         end
