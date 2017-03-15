@@ -463,12 +463,15 @@ local function space_iteration(is_drop)
         i = i + 1
         local shard_id = tuple[space.index[0].parts[1].fieldno]
         if shard(shard_id)[1].id ~= shard(shard_id, false, true)[1].id then
-            local data = {STATE_NEW}
+            local data = {}
             for i, part in pairs(space.index[0].parts) do
                 table.insert(data, tuple[part.fieldno])
             end
-            box.space.sh_worker:auto_increment(data)
-            tuples = tuples +1
+            if lookup:get(data) == nil then
+                table.insert(data, 1, STATE_NEW)
+                box.space.sh_worker:auto_increment(data)
+                tuples = tuples +1
+            end
         end
 
         -- do not use 100% CPU
@@ -627,6 +630,33 @@ local function resharding_worker()
     end
 end
 
+local function rsd_join()
+    -- storages checker. Can be used in app servers
+    fiber.name('Resharding waiter')
+    while true do
+        local cluster = remote_resharding_state()
+        local in_progress = 0
+        for i, node in pairs(cluster) do
+            local response = node.data[1][1]
+            if response.status then
+                in_progress = 1
+                break
+            end
+        end
+        box.space.sharding:replace{"RESHARDING_STATE", in_progress}
+        if in_progress == 0 then
+            log.info('Resharding complete')
+            return
+        end
+        fiber.sleep(0.1)
+    end
+end
+
+local function set_rsd()
+    box.space.sharding:replace{"RESHARDING_STATE", 1}
+    fiber.create(rsd_join)
+end
+
 function remote_append(servers)
     return cluster_operation('append_shard', servers)
 end
@@ -667,7 +697,7 @@ function resharding_status()
     }
 end
 
-function append_shard(servers, is_replica)
+function append_shard(servers, is_replica, start_waiter)
     if #servers ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
@@ -697,6 +727,8 @@ function append_shard(servers, is_replica)
     end
     if not is_replica then
         box.space.sharding:replace{"RESHARDING", 2}
+    elseif start_waiter then
+        set_rsd()
     end
     return true
 end
