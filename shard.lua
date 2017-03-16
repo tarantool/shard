@@ -25,6 +25,12 @@ local STATE_NEW = 0
 local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
 
+local RSD_CURRENT = 'CUR_SPACE'
+local RSD_FINISHED = 'FINISHED_SPACE'
+local RSD_HANDLED = 'HANDLED_SPACES'
+local RSD_STATE = 'RESHARDING'
+local RDS_FLAG = 'RESHARDING_STATE'
+
 local init_complete = false
 local configuration = {}
 local shard_obj
@@ -414,8 +420,8 @@ function validate_sources(config, strict)
 end
 
 local function space_iteration(is_drop)
-    local mode = box.space.sharding:get('CUR_SPACE')
-    if mode == nil then
+    local mode = box.space.sharding:get(RSD_CURRENT)
+    if mode == nil or mode[2] == '' then
         return
     end
     -- wait for until current transfer is working
@@ -481,7 +487,7 @@ local function space_iteration(is_drop)
         end
     end
     log.info('Found %d tuples', tuples)
-    box.space.sharding:replace{'FINISHED_SPACE', space_name}
+    box.space.sharding:replace{RSD_FINISHED, space_name}
 
     return true
 end
@@ -517,7 +523,7 @@ local function transfer_worker(self)
     fiber.name('transfer')
     while true do
         if reshard_ready() then
-            local cur_space = box.space.sharding:get('CUR_SPACE')
+            local cur_space = box.space.sharding:get(RSD_CURRENT)
             local worker = box.space.sh_worker
             lock_transfer()
             if cur_space ~= nil and cur_space[2] ~= ''
@@ -560,9 +566,9 @@ end
 
 local function rsd_init()
     local sh = box.space.sharding
-    sh:replace{'HANDLED_SPACES', {}}
-    sh:replace{'CUR_SPACE', ''}
-    sh:replace{'FINISHED_SPACE', ''}
+    sh:replace{RSD_HANDLED, {}}
+    sh:replace{RSD_CURRENT, ''}
+    sh:replace{RSD_FINISHED, ''}
     unlock_transfer()
 end
 
@@ -572,56 +578,60 @@ local function rsd_finalize()
 
     log.info('Resharding complete')
     local sh = box.space.sharding
-    sh:replace{"RESHARDING", 0}
-    sh:replace{'HANDLED_SPACES', {}}
-    sh:replace{'CUR_SPACE', ''}
-    sh:replace{'FINISHED_SPACE', ''}
+    sh:replace{RSD_STATE, 0}
+    sh:replace{RSD_HANDLED, {}}
+    sh:replace{RSD_CURRENT, ''}
+    sh:replace{RSD_FINISHED, ''}
+end
+
+local function get_next_space(sh_state, cur_space)
+    local handled = sh_state:get{RSD_HANDLED}[2]
+    for _, obj in pairs(box.space) do
+        local space_name = obj.name
+        if is_reshardable(space_name) and
+                not contains(handled, space_name) then
+            -- update handled spaces list
+            -- we must check twise space
+            if cur_space ~= space_name then
+                if cur_space ~= '' then
+                    space_iteration(false)
+                    wait_state(STATE_NEW)
+                    table.insert(handled, cur_space)
+                    sh_state:replace{RSD_HANDLED, handled}
+                end
+                -- set current reshadring pointer to this space
+                sh_state:replace{RSD_CURRENT, space_name}
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function resharding_worker()
     fiber.name('resharding')
     local sh = box.space.sharding
-    local rs_state = sh:get('RESHARDING')
+    local rs_state = sh:get(RSD_STATE)
     if rs_state == nil or rs_state[2] == 0 then
         rsd_init()
     end
 
     while true do
         if reshard_ready() then
-            local handled = sh:get{'HANDLED_SPACES'}[2]
-            local cur_space = sh:get('CUR_SPACE')[2]
-            local finished = sh:get('FINISHED_SPACE')[2]
+            local cur_space = sh:get(RSD_CURRENT)[2]
+            local finished = sh:get(RSD_FINISHED)[2]
 
             -- resharding finished, we can switch to the next space
             if finished == cur_space then
-                local has_new_space = false
-                for _, obj in pairs(box.space) do
-                    local space_name = obj.name
-                    if is_reshardable(space_name) and
-                            not contains(handled, space_name) then
-                        -- update handled spaces list
-                        -- we must check twise space
-                        if cur_space ~= space_name then
-                            if cur_space ~= '' then
-                                space_iteration(false)
-                                wait_state(STATE_NEW)
-                                table.insert(handled, cur_space)
-                                sh:replace{'HANDLED_SPACES', handled}
-                            end
-                            -- set current reshadring pointer to this space
-                            sh:replace{"CUR_SPACE", space_name}
-                            has_new_space = true
-                            break
-                        end
-                    end
-                end
+                local has_new_space = get_next_space(sh, cur_space)
                 while is_transfer_locked() do
                     fiber.sleep(0.1)
                 end
-                if not has_new_space then
-                    rsd_finalize()
-                else
+
+                if has_new_space then
                     space_iteration(true)
+                else
+                    rsd_finalize()
                 end
             end
         end
@@ -643,9 +653,9 @@ local function rsd_join()
                 break
             end
         end
-        box.space.sharding:replace{"RESHARDING_STATE", in_progress}
+        box.space.sharding:replace{RDS_FLAG, in_progress}
         if in_progress == 0 then
-            log.info('Resharding complete')
+            log.info('Resharding state: off')
             return
         end
         fiber.sleep(0.1)
@@ -653,7 +663,7 @@ local function rsd_join()
 end
 
 local function set_rsd()
-    box.space.sharding:replace{"RESHARDING_STATE", 1}
+    box.space.sharding:replace{RDS_FLAG, 1}
     fiber.create(rsd_join)
 end
 
@@ -680,14 +690,14 @@ function remote_resharding_state()
 end
 
 function resharding_status()
-    local status = box.space.sharding:get{'RESHARDING'}
+    local status = box.space.sharding:get{RSD_STATE}
     if status ~= nil then
         status = status[2] == 2
     else
         status = false
     end
-    local spaces = box.space.sharding:get{'HANDLED_SPACES'}[2]
-    local current = box.space.sharding:get{'CUR_SPACE'}[2]
+    local spaces = box.space.sharding:get{RSD_HANDLED}[2]
+    local current = box.space.sharding:get{RSD_CURRENT}[2]
     local worker_len = box.space.sh_worker.index[1]:count(STATE_NEW)
     return {
         status=status,
@@ -703,7 +713,7 @@ function append_shard(servers, is_replica, start_waiter)
     end
     -- Turn on resharding mode
     if not is_replica then
-        box.space.sharding:replace{"RESHARDING", 1}
+        box.space.sharding:replace{RSD_STATE, 1}
     end
     -- add new "virtual" shard and append server
     shards[shards_n + 1] = {}
@@ -726,7 +736,7 @@ function append_shard(servers, is_replica, start_waiter)
         table.insert(shards[shards_n], zone.list[zone.n])
     end
     if not is_replica then
-        box.space.sharding:replace{"RESHARDING", 2}
+        box.space.sharding:replace{RSD_STATE, 2}
     elseif start_waiter then
         set_rsd()
     end
