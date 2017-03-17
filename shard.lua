@@ -431,10 +431,16 @@ local function space_iteration(is_drop)
 
     local space_name = mode[2]
     local space = box.space[space_name]
+
+    local aux_space = 'sh_worker'
+    if space.engine == 'vinyl' then
+        aux_space = 'sh_worker_vinyl'
+    end
+    local worker = box.space[aux_space]
+
     -- drop prev space
     if is_drop then
         lock_transfer()
-        local worker = box.space.sh_worker
         if worker.index[2] ~= nil then
             worker.index[2]:drop()
         end
@@ -462,7 +468,7 @@ local function space_iteration(is_drop)
         unlock_transfer()
     end
     local i = 0
-    local lookup = box.space.sh_worker.index.lookup
+    local lookup = worker.index.lookup
     log.info('Space iteration for space %s', space_name)
     local tuples = 0
     for _, tuple in space:pairs() do
@@ -475,7 +481,7 @@ local function space_iteration(is_drop)
             end
             if lookup:get(data) == nil then
                 table.insert(data, 1, STATE_NEW)
-                box.space.sh_worker:auto_increment(data)
+                worker:auto_increment(data)
                 tuples = tuples +1
             end
         end
@@ -505,16 +511,17 @@ local function is_reshardable(space_name)
     if string.sub(space_name, 1, 1) == '_' then
         return false
     end
-    -- FIXME: implement vinyl support
-    if box.space[space_name].engine ~= 'memtx' then
+    local space = box.space[space_name]
+    if space.engine == 'vinyl' and space:count() == 0 then
         return false
     end
-    if box.space[space_name]:len() == 0 then
+    if space.engine == 'memtx' and space:len() == 0 then
         return false
     end
     local reserved = {
         operations=1, sharding=1,
-        sh_worker=1, cluster_manager=1
+        sh_worker=1, cluster_manager=1,
+        sh_worker_vinyl=1
     }
     return reserved[space_name] == nil
 end
@@ -524,11 +531,17 @@ local function transfer_worker(self)
     while true do
         if reshard_ready() then
             local cur_space = box.space.sharding:get(RSD_CURRENT)
-            local worker = box.space.sh_worker
+            local space = box.space[cur_space[2]]
+
+            local aux_space = 'sh_worker'
+            if space ~= nil and space.engine == 'vinyl' then
+                aux_space = 'sh_worker_vinyl'
+            end
+            local worker = box.space[aux_space]
+
             lock_transfer()
             if cur_space ~= nil and cur_space[2] ~= ''
                     and worker.index[1] ~= nil and worker.index[2] ~= nil then
-                local space = box.space[cur_space[2]]
                 for _, meta in worker.index[1]:pairs({STATE_NEW}) do
                     local index = {}
                     for i=3,#meta do
@@ -547,6 +560,7 @@ local function transfer_worker(self)
                         box.commit()
                     else
                         log.info('Transfer error: %s', err)
+                        log.info(require('yaml').encode(tuple))
                     end
                 end
             end
@@ -556,8 +570,8 @@ local function transfer_worker(self)
     end
 end
 
-local function wait_state(state)
-    local index = box.space.sh_worker.index.status
+local function wait_state(space, state)
+    local index = space.index.status
     local iter = index:pairs(state)
     while iter.gen(iter.param, iter.state) ~= nil do
         fiber.sleep(0.1)
@@ -574,7 +588,8 @@ end
 
 local function rsd_finalize()
     space_iteration(false)
-    wait_state(STATE_NEW)
+    wait_state(box.space.sh_worker, STATE_NEW)
+    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
 
     log.info('Resharding complete')
     local sh = box.space.sharding
@@ -595,7 +610,8 @@ local function get_next_space(sh_state, cur_space)
             if cur_space ~= space_name then
                 if cur_space ~= '' then
                     space_iteration(false)
-                    wait_state(STATE_NEW)
+                    wait_state(box.space.sh_worker, STATE_NEW)
+                    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
                     table.insert(handled, cur_space)
                     sh_state:replace{RSD_HANDLED, handled}
                 end
@@ -699,6 +715,7 @@ function resharding_status()
     local spaces = box.space.sharding:get{RSD_HANDLED}[2]
     local current = box.space.sharding:get{RSD_CURRENT}[2]
     local worker_len = box.space.sh_worker.index[1]:count(STATE_NEW)
+    worker_len = worker_len + box.space.sh_worker_vinyl.index[1]:count(STATE_NEW)
     return {
         status=status,
         spaces=spaces,
@@ -1523,6 +1540,11 @@ local function create_spaces(cfg)
     end
     if box.space.sh_worker == nil then
         local sh_space = box.schema.create_space('sh_worker')
+        sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
+        sh_space:create_index('status', {type = 'tree', parts = {2, 'num'}, unique=false})
+    end
+    if box.space.sh_worker_vinyl == nil then
+        local sh_space = box.schema.create_space('sh_worker_vinyl', {engine='vinyl'})
         sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
         sh_space:create_index('status', {type = 'tree', parts = {2, 'num'}, unique=false})
     end
