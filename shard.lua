@@ -30,6 +30,7 @@ local RSD_FINISHED = 'FINISHED_SPACE'
 local RSD_HANDLED = 'HANDLED_SPACES'
 local RSD_STATE = 'RESHARDING'
 local RDS_FLAG = 'RESHARDING_STATE'
+local TUPLES_PER_ITERATION = 1000
 
 local init_complete = false
 local configuration = {}
@@ -419,6 +420,94 @@ function validate_sources(config, strict)
     return true
 end
 
+local function drop_rsd_index(worker, space)
+    lock_transfer()
+    if worker.index[2] ~= nil then
+        worker.index[2]:drop()
+    end
+    --worker:truncate()
+    local i = 0
+    for _, w_tuple in worker:pairs() do
+        i = i + 1
+        worker:delete{w_tuple[1]}
+        if i % 10000 == 0 then
+            fiber.sleep(0.01)
+        end
+    end
+
+    local parts = {}
+    for i, part in pairs(space.index[0].parts) do
+        -- shift main index for sh_worker space
+        table.insert(parts, i + 2)
+        table.insert(parts, part.type)
+    end
+    if worker.index.lookup == nil then
+        worker:create_index(
+            'lookup', {type = 'tree', parts = parts}
+        )
+    end
+    unlock_transfer()
+end
+
+local function process_tuple(space, tuple, worker, lookup)
+    local shard_id = tuple[space.index[0].parts[1].fieldno]
+    local old_sh = shard(shard_id, false, true)[1]
+    local new_sh = shard(shard_id)[1]
+    if new_sh.id == old_sh.id then
+        return false
+    end
+
+    local data = {}
+    for i, part in pairs(space.index[0].parts) do
+        table.insert(data, tuple[part.fieldno])
+    end
+    if lookup:get(data) == nil then
+        table.insert(data, 1, STATE_NEW)
+        worker:auto_increment(data)
+    end
+    return true
+end
+
+local function tree_iter(space, worker, lookup, fun)
+    local tuples = 0
+    local params = {limit=RESHARDING_RPS, iterator = 'GT'}
+    local data = space.index[0]:select({}, params)
+    local last_id = {}
+
+    while #data > 0 do
+        last_id = data[#data]
+        for _, tuple in pairs(data) do
+            if fun(space, tuple, worker, lookup) then
+                tuples = tuples +1
+            end
+        end
+
+        local key = {}
+        for _, part in pairs(space.index[0].parts) do
+            table.insert(key, last_id[part.fieldno])
+        end
+        data = space.index[0]:select(key, params)
+        fiber.sleep(0.1)
+    end
+    return tuples
+end
+
+local function hash_iter(space, worker, lookup, fun)
+    local tuples, i = 0, 0
+    for _, tuple in space:pairs() do
+        i = i + 1
+        if fun(space, tuple, worker, lookup) then
+            tuples = tuples +1
+        end
+        -- do not use 100% CPU
+        if i == RESHARDING_RPS then
+            i = 0
+            fiber.sleep(0.1)
+        end
+    end
+    return tuples
+end
+
 local function space_iteration(is_drop)
     local mode = box.space.sharding:get(RSD_CURRENT)
     if mode == nil or mode[2] == '' then
@@ -431,7 +520,6 @@ local function space_iteration(is_drop)
 
     local space_name = mode[2]
     local space = box.space[space_name]
-
     local aux_space = 'sh_worker'
     if space.engine == 'vinyl' then
         aux_space = 'sh_worker_vinyl'
@@ -440,61 +528,21 @@ local function space_iteration(is_drop)
 
     -- drop prev space
     if is_drop then
-        lock_transfer()
-        if worker.index[2] ~= nil then
-            worker.index[2]:drop()
-        end
-        --worker:truncate()
-        local i = 0
-        for _, w_tuple in worker:pairs() do
-            i = i + 1
-            worker:delete{w_tuple[1]}
-            if i % 10000 == 0 then
-                fiber.sleep(0.01)
-            end
-        end
-
-        local parts = {}
-        for i, part in pairs(space.index[0].parts) do
-            -- shift main index for sh_worker space
-            table.insert(parts, i + 2)
-            table.insert(parts, part.type)
-        end
-        if worker.index.lookup == nil then
-            worker:create_index(
-                'lookup', {type = 'tree', parts = parts}
-            )
-        end
-        unlock_transfer()
+        drop_rsd_index(worker, space)
     end
-    local i = 0
     local lookup = worker.index.lookup
+
     log.info('Space iteration for space %s', space_name)
     local tuples = 0
-    for _, tuple in space:pairs() do
-        i = i + 1
-        local shard_id = tuple[space.index[0].parts[1].fieldno]
-        if shard(shard_id)[1].id ~= shard(shard_id, false, true)[1].id then
-            local data = {}
-            for i, part in pairs(space.index[0].parts) do
-                table.insert(data, tuple[part.fieldno])
-            end
-            if lookup:get(data) == nil then
-                table.insert(data, 1, STATE_NEW)
-                worker:auto_increment(data)
-                tuples = tuples +1
-            end
-        end
 
-        -- do not use 100% CPU
-        if i == RESHARDING_RPS then
-            i = 0
-            fiber.sleep(0.1)
-        end
+    if space.index[0].type == 'HASH' then
+        tuples = hash_iter(space, worker, lookup, process_tuple)
+    else
+        tuples = tree_iter(space, worker, lookup, process_tuple)
     end
+
     log.info('Found %d tuples', tuples)
     box.space.sharding:replace{RSD_FINISHED, space_name}
-
     return true
 end
 
@@ -526,6 +574,29 @@ local function is_reshardable(space_name)
     return reserved[space_name] == nil
 end
 
+local function transfer(self, space, worker, data)
+    for _, meta in pairs(data) do
+        local index = {}
+        for i=3,#meta do
+            table.insert(index, meta[i])
+        end
+        worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
+        local tuple = space:get(index)
+        local ok, err = pcall(function()
+            local nodes = shard(tuple[1])
+            self:single_call(space.name, nodes[1], 'replace', tuple)
+        end)
+        if ok then
+            box.begin()
+            worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
+            space:delete(index)
+            box.commit()
+        else
+            log.info('Transfer error: %s', err)
+        end
+    end
+end
+
 local function transfer_worker(self)
     fiber.name('transfer')
     while true do
@@ -542,26 +613,15 @@ local function transfer_worker(self)
             lock_transfer()
             if cur_space ~= nil and cur_space[2] ~= ''
                     and worker.index[1] ~= nil and worker.index[2] ~= nil then
-                for _, meta in worker.index[1]:pairs({STATE_NEW}) do
-                    local index = {}
-                    for i=3,#meta do
-                        table.insert(index, meta[i])
-                    end
-                    worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
-                    local tuple = space:get(index)
-                    local ok, err = pcall(function()
-                        local nodes = shard(tuple[1])
-                        self:single_call(cur_space[2], nodes[1], 'replace', tuple)
-                    end)
-                    if ok then
-                        box.begin()
-                        worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
-                        space:delete(index)
-                        box.commit()
-                    else
-                        log.info('Transfer error: %s', err)
-                        log.info(require('yaml').encode(tuple))
-                    end
+
+                local data = worker.index[1]:select(
+                    {STATE_NEW}, {limit=TUPLES_PER_ITERATION}
+                )
+                while #data > 0 do
+                    transfer(self, space, worker, data)
+                    data = worker.index[1]:select(
+                        {STATE_NEW}, {limit=TUPLES_PER_ITERATION}
+                    )
                 end
             end
             unlock_transfer()
@@ -578,6 +638,13 @@ local function wait_state(space, state)
     end
 end
 
+local function wait_iteration()
+    wait_state(box.space.sh_worker, STATE_NEW)
+    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
+    wait_state(box.space.sh_worker, STATE_INPROGRESS)
+    wait_state(box.space.sh_worker_vinyl, STATE_INPROGRESS)
+end
+
 local function rsd_init()
     local sh = box.space.sharding
     sh:replace{RSD_HANDLED, {}}
@@ -587,9 +654,11 @@ local function rsd_init()
 end
 
 local function rsd_finalize()
+    while is_transfer_locked() do
+        fiber.sleep(0.1)
+    end
     space_iteration(false)
-    wait_state(box.space.sh_worker, STATE_NEW)
-    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
+    wait_iteration()
 
     log.info('Resharding complete')
     local sh = box.space.sharding
@@ -609,9 +678,11 @@ local function get_next_space(sh_state, cur_space)
             -- we must check twise space
             if cur_space ~= space_name then
                 if cur_space ~= '' then
+                    while is_transfer_locked() do
+                        fiber.sleep(0.1)
+                    end
                     space_iteration(false)
-                    wait_state(box.space.sh_worker, STATE_NEW)
-                    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
+                    wait_iteration()
                     table.insert(handled, cur_space)
                     sh_state:replace{RSD_HANDLED, handled}
                 end
