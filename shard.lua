@@ -43,6 +43,18 @@ if compat ~= '1.6' then
     nb_call = 'call_16'
 end
 
+-- helpers
+local function is_connected()
+    return init_complete
+end
+
+local function wait_connection()
+    while not is_connected() do
+        fiber.sleep(0.01)
+    end
+end
+
+
 --queue implementation
 local function queue_handler(self, fun)
     fiber.name('queue/handler')
@@ -599,6 +611,7 @@ end
 
 local function transfer_worker(self)
     fiber.name('transfer')
+    wait_connection()
     while true do
         if reshard_ready() then
             local cur_space = box.space.sharding:get(RSD_CURRENT)
@@ -695,12 +708,34 @@ local function get_next_space(sh_state, cur_space)
     return false
 end
 
-local function resharding_worker()
+local function rsd_warmup(self)
+    wait_connection()
+    local cur_space = box.space.sharding:get(RSD_CURRENT)[2]
+    local space = box.space[cur_space]
+    local worker_name = 'sh_worker'
+    if space.engine == 'vinyl' then
+        worker_name = 'sh_worker_vinyl'
+    end
+    local worker = box.space[worker_name]
+
+    local data = worker.index[1]:select(
+        {STATE_INPROGRESS}
+    )
+    log.info('WARMUP')
+    if #data > 0 then
+        log.info('Resharding warmup: %d tuples', #data)
+        transfer(self, space, worker, data)
+    end
+end
+
+local function resharding_worker(self)
     fiber.name('resharding')
     local sh = box.space.sharding
     local rs_state = sh:get(RSD_STATE)
     if rs_state == nil or rs_state[2] == 0 then
         rsd_init()
+    else
+        rsd_warmup(self)
     end
 
     while true do
@@ -1808,16 +1843,6 @@ local function len()
     return shards_n
 end
 
-local function is_connected()
-    return init_complete
-end
-
-local function wait_connection()
-    while not is_connected() do
-        fiber.sleep(0.01)
-    end
-end
-
 local function has_unfinished_operations()
     local tuple = box.space.operations.index.queue:min()
     return tuple ~= nil and tuple[2] ~= STATE_HANDLED
@@ -1861,7 +1886,7 @@ shard_obj = {
     check_shard = check_shard,
     enable_resharding = function(self)
         fiber.create(schema_worker)
-        fiber.create(resharding_worker)
+        fiber.create(resharding_worker, self)
         fiber.create(transfer_worker, self)
         log.info('Enabled resharding workers')
     end
