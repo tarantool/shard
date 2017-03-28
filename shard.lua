@@ -856,6 +856,7 @@ function append_shard(servers, is_replica, start_waiter)
         -- append server to connection pool
         pool:connect(shards_n*redundancy - id + 1, server)
         local zone = pool.servers[server.zone]
+        zone.list[zone.n].zone_name = server.zone
         table.insert(shards[shards_n], zone.list[zone.n])
     end
     if not is_replica then
