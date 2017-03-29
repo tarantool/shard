@@ -9,6 +9,41 @@ local yaml = require('yaml')
 local uuid = require('uuid')
 local json = require('json')
 local lib_pool = require('connpool')
+local ffi = require('ffi')
+
+-- tuple array merge driver
+local driver = require('driver')
+-- field type map
+local field_types = {
+    any			= 0,
+    unsigned		= 1,
+    string		= 2,
+    array		= 3,
+    number		= 4,
+    integer		= 5,
+    scalar		= 5
+}
+
+local function merge_new(key_parts)
+    local parts = {}
+    local part_no = 1
+    for _, v in pairs(key_parts) do
+        if v.fieldno <= 0 then
+            error('Invalid field number')
+        end
+        if field_types[v.type] ~= nil then
+            parts[part_no] = {fieldno = v.fieldno - 1, type = field_types[v.type]}
+	    part_no = part_no + 1
+        else
+            error('Unknow field type: ', v.type)
+        end
+    end
+    local comparator = driver.merge_new(parts)
+    ffi.gc(comparator, driver.merge_del)
+    return function(sources, skip, limit, order)
+        return driver.merge(sources, skip, limit, order, comparator)
+    end
+end
 
 local shards = {}
 local shards_n
