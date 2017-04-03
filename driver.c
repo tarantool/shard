@@ -245,13 +245,12 @@ lbox_merge_new(struct lua_State *L)
 		free(type);
 		return luaL_error(L, "Can not alloc comparator");
 	}
-	comparator->key_def = (box_key_def_t *)malloc(box_key_def_size(count));
+	comparator->key_def = box_key_def_new(fieldno, type, count);
 	if (comparator->key_def == NULL) {
 		free(fieldno);
 		free(type);
 		return luaL_error(L, "Can not alloc key_def");
 	}
-	box_key_def_create(comparator->key_def, fieldno, type, count);
 	free(fieldno);
 	free(type);
 
@@ -275,7 +274,7 @@ lbox_merge_del(lua_State *L)
 	    cdata_type != comparator_type_id)
 		return 0;
 	free((*comparator)->key_def);
-	box_tuple_format_ref((*comparator)->format, -1);
+	box_tuple_format_unref((*comparator)->format);
 	free(*comparator);
 	return 0;
 }
