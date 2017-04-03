@@ -10,6 +10,8 @@ local uuid = require('uuid')
 local json = require('json')
 local lib_pool = require('connpool')
 local ffi = require('ffi')
+local buffer = require('buffer')
+
 
 -- tuple array merge driver
 local driver = require('driver')
@@ -24,6 +26,7 @@ local field_types = {
     scalar		= 5
 }
 
+local merger = {}
 local function merge_new(key_parts)
     local parts = {}
     local part_no = 1
@@ -1130,17 +1133,37 @@ function merge_sort(results, index_fields, limits, cut_index)
     return result
 end
 
+local function get_merger(space_obj, index_no)
+    if merger[space_obj.name] == nil then
+        merger[space_obj.name] = {}
+    end
+    if merger[space_obj.name][index_no] == nil then
+        local index = space_obj.index[index_no]
+        merger[space_obj.name][index_no] = merge_new(index.parts)
+    end
+    return merger[space_obj.name][index_no]
+end
+
 local function secondary_select(self, space, index_no,
                                 index, limits, key)
     local results = {}
-    local index_fields = nil
+    local merge_fun = nil
+
     for i=1, #shards do
         local j = #shards[i]
         local srd = shards[i][j]
-        if index_fields == nil then
-            local schema = srd.conn.space[space]
-            index_fields = schema.index[index_no].parts
+        if merge_fun == nil then
+            merge_fun = get_merger(srd.conn.space[space], index_no)
         end
+        local buf = buffer.ibuf()
+        if limits == nil then
+            limits = {}
+        end
+        if limits.offset == nil then
+            limits.offset = 0
+        end
+        limits.buffer = buf
+
         local part = index_call(
             self, space, srd, 'select',
             index_no, index, limits
@@ -1154,14 +1177,10 @@ local function secondary_select(self, space, index_no,
                 index_no, index, limits
             )
         end
-
-        for _, elem in pairs(part) do
-            table.insert(results, elem)
-        end
+        table.insert(results, buf)
     end
     -- merge queries
-    results = merge_sort(results, index_fields, limits, key)
-    return results
+    return {merge_fun(results, limits.offset, limits.limit, -1)}
 end
 
 local function direct_call(self, server, func_name, ...)
