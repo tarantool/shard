@@ -1144,26 +1144,27 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function secondary_select(self, space, index_no,
-                                index, limits, key)
+local function mr_select(self, space, nodes, index_no,
+                        index, limits, key)
     local results = {}
     local merge_fun = nil
-
-    for i=1, #shards do
-        local j = #shards[i]
-        local srd = shards[i][j]
+    if limits == nil then
+        limits = {}
+    end
+    if limits.offset == nil then
+        limits.offset = 0
+    end
+    if limits.limit == nil then
+        limits.limit = 1000
+    end
+    for _, node in pairs(nodes) do
+        local j = #node
+        local srd = node[j]
+        local buf = buffer.ibuf()
+        limits.buffer = buf
         if merge_fun == nil then
             merge_fun = get_merger(srd.conn.space[space], index_no)
         end
-        local buf = buffer.ibuf()
-        if limits == nil then
-            limits = {}
-        end
-        if limits.offset == nil then
-            limits.offset = 0
-        end
-        limits.buffer = buf
-
         local part = index_call(
             self, space, srd, 'select',
             index_no, index, limits
@@ -1171,7 +1172,7 @@ local function secondary_select(self, space, index_no,
 
         while part == nil and j >= 0 do
             j = j - 1
-            srd = self.shard.shards[i][j]
+            srd = node[j]
             part = index_call(
                 self, space, srd, 'select',
                 index_no, index, limits
@@ -1179,8 +1180,15 @@ local function secondary_select(self, space, index_no,
         end
         table.insert(results, buf)
     end
-    -- merge queries
     return {merge_fun(results, limits.offset, limits.limit, -1)}
+end
+
+local function secondary_select(self, space, index_no,
+                                index, limits, key)
+    return mr_select(
+        self, space, shards, index_no,
+        index, limits, key
+    )
 end
 
 local function direct_call(self, server, func_name, ...)
@@ -1775,6 +1783,7 @@ local function enable_operations()
     shard_obj.space_call = space_call
     shard_obj.index_call = index_call
     shard_obj.secondary_select = secondary_select
+    shard_obj.mr_select = mr_select
     shard_obj.direct_call = direct_call
     shard_obj.request = request
     shard_obj.queue_request = queue_request
@@ -1857,6 +1866,9 @@ local function enable_operations()
                 end,
                 secondary_select = function(this, ...)
                     return self.secondary_select(self, space, ...)
+                end,
+                mr_select = function(this, ...)
+                    return self.mr_select(self, space, ...)
                 end
             }
         end
