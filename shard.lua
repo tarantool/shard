@@ -11,7 +11,7 @@ local json = require('json')
 local lib_pool = require('connpool')
 local ffi = require('ffi')
 local buffer = require('buffer')
-
+local mpffi = require'msgpackffi'
 
 -- tuple array merge driver
 local driver = require('driver')
@@ -38,14 +38,19 @@ local function merge_new(key_parts)
             parts[part_no] = {fieldno = v.fieldno - 1, type = field_types[v.type]}
 	    part_no = part_no + 1
         else
-            error('Unknow field type: ', v.type)
+            error('Unknow field type: ' .. v.type)
         end
     end
-    local comparator = driver.merge_new(parts)
-    ffi.gc(comparator, driver.merge_del)
-    return function(sources, skip, limit, order)
-        return driver.merge(sources, skip, limit, order, comparator)
-    end
+    local merger = driver.merge_new(parts)
+    ffi.gc(merger, driver.merge_del)
+    return {
+        start = function (sources, order) return driver.merge_start(merger, sources, order) end,
+        cmp = function (key) return driver.merge_cmp(merger, key) end,
+        next = function () return driver.merge_next(merger) end }
+end
+
+local function key_create(data)
+    return mp.encode(data)
 end
 
 local shards = {}
