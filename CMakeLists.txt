@@ -17,7 +17,7 @@ add_definitions("-D_GNU_SOURCE")
 include_directories(${TARANTOOL_INCLUDE_DIRS})
 
 # Set CFLAGS
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -Wextra")
 
 add_library(driver SHARED driver.c msgpuck.c hints.c)
