@@ -50,7 +50,7 @@ local function merge_new(key_parts)
 end
 
 local function key_create(data)
-    return mp.encode(data)
+    return mpffi.encode(data)
 end
 
 local shards = {}
@@ -1152,7 +1152,7 @@ end
 local function mr_select(self, space, nodes, index_no,
                         index, limits, key)
     local results = {}
-    local merge_fun = nil
+    local merge_obj = nil
     if limits == nil then
         limits = {}
     end
@@ -1167,8 +1167,8 @@ local function mr_select(self, space, nodes, index_no,
         local srd = node[j]
         local buf = buffer.ibuf()
         limits.buffer = buf
-        if merge_fun == nil then
-            merge_fun = get_merger(srd.conn.space[space], index_no)
+        if merge_obj == nil then
+            merge_obj = get_merger(srd.conn.space[space], index_no)
         end
         local part = index_call(
             self, space, srd, 'select',
@@ -1185,7 +1185,17 @@ local function mr_select(self, space, nodes, index_no,
         end
         table.insert(results, buf)
     end
-    return {merge_fun(results, limits.offset, limits.limit, -1)}
+    merge_obj.start(results, -1)
+    local tuples = {}
+    local cmp_key = key_create(key or index)
+    while merge_obj.cmp(cmp_key) == 0 do
+        local tuple = merge_obj.next()
+        table.insert(tuples, tuple)
+        if #tuples >= limits.limit then
+            break
+        end
+    end
+    return tuples
 end
 
 local function secondary_select(self, space, index_no,
