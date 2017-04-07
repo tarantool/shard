@@ -173,8 +173,9 @@ lbox_merger_start(struct lua_State *L)
 		merger->sources[merger->count]->buf = buf;
 		merger->sources[merger->count]->tuple = NULL;
 		source_fetch(merger->sources[merger->count], merger->format);
-		merger_heap_insert(&merger->heap,
-				   &merger->sources[merger->count]->hnode);
+		if (merger->sources[merger->count]->tuple != NULL)
+			merger_heap_insert(&merger->heap,
+					   &merger->sources[merger->count]->hnode);
 		++merger->count;
 	}
 	lua_pushboolean(L, true);
