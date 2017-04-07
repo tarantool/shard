@@ -629,13 +629,17 @@ local function is_reshardable(space_name)
     return reserved[space_name] == nil
 end
 
-local function transfer(self, space, worker, data)
+local function transfer(self, space, worker, data, force)
     for _, meta in pairs(data) do
         local index = {}
-        for i=3,#meta do
-            table.insert(index, meta[i])
+        if force then
+            index = meta
+        else
+            for i=3,#meta do
+                table.insert(index, meta[i])
+            end
+            worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
         end
-        worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
         local tuple = space:get(index)
         local ok, err = pcall(function()
             local nodes = shard(tuple[1])
@@ -643,13 +647,34 @@ local function transfer(self, space, worker, data)
         end)
         if ok then
             box.begin()
-            worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
+            if not force then
+                worker:update(meta[1], {{'=', 2, STATE_HANDLED}})
+            end
             space:delete(index)
             box.commit()
         else
             log.info('Transfer error: %s', err)
         end
     end
+end
+
+function force_transfer(space_name, index)
+    local space = box.space[space_name]
+    if space == nil then
+        return false
+    end
+    local aux_space = 'sh_worker'
+    if space ~= nil and space.engine == 'vinyl' then
+        aux_space = 'sh_worker_vinyl'
+    end
+    local worker = box.space[aux_space]
+    local ok, err = pcall(function()
+        transfer(shard_obj, space, worker, {index}, true)
+    end)
+    if not ok then
+        log.info('Transfer failed: %s', err)
+    end
+    return ok
 end
 
 local function transfer_worker(self)
