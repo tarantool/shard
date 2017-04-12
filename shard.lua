@@ -276,7 +276,7 @@ function is_valid_index(name, index_data, index_no, strict)
         strict = true
     end
 
-    if index_data == nil then
+    if index_data == nil or index == nil then
         return false
     end
 
@@ -348,7 +348,7 @@ end
 function update_space(space)
     local obj = box.space[space.name]
     for i, index in pairs(space.index) do
-        if obj == nil or obj.index[index.name] == nil then
+        if obj ~= nil and obj.index[index.id] == nil then
             local parts = {}
             for _, part in pairs(index.parts) do
                 table.insert(parts, part.fieldno)
@@ -365,6 +365,14 @@ function update_space(space)
         end
     end
     return true
+end
+
+function update_spaces(config)
+    local result = true
+    for _, space in pairs(config) do
+        result = result and update_space(space)
+    end
+    return result
 end
 
 local function rollback(operation)
@@ -443,7 +451,7 @@ function drop_index(space_name, index_name)
     return true
 end
 
-function create_space(config)
+function create_spaces(config)
     local manager = box.space.cluster_manager
 
     for i, space in pairs(config) do
@@ -466,6 +474,16 @@ function validate_sources(config, strict)
             return false, {name=space.name, index=nil}
         end
         for k,v in pairs(box.space[space.name].index) do
+            if type(k) == 'number' then
+                local is_valid = is_valid_index(
+                    space.name, space.index[k], k, strict
+                )
+                if space.index[k] == nil or not is_valid  then
+                    return false, {name=space.name, index=k}
+                end
+            end
+        end
+        for k,v in pairs(space.index) do
             if type(k) == 'number' then
                 local is_valid = is_valid_index(
                     space.name, space.index[k], k, strict
