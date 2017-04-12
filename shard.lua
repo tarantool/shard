@@ -276,6 +276,10 @@ function is_valid_index(name, index_data, index_no, strict)
         strict = true
     end
 
+    if index_data == nil then
+        return false
+    end
+
     if #index.parts ~= #index_data.parts then
         return false
     end
@@ -459,7 +463,7 @@ end
 function validate_sources(config, strict)
     for i, space in pairs(config) do
         if box.space[space.name] == nil then
-            return false
+            return false, {name=space.name, index=nil}
         end
         for k,v in pairs(box.space[space.name].index) do
             if type(k) == 'number' then
@@ -467,7 +471,7 @@ function validate_sources(config, strict)
                     space.name, space.index[k], k, strict
                 )
                 if space.index[k] == nil or not is_valid  then
-                    return false
+                    return false, {name=space.name, index=k}
                 end
             end
         end
