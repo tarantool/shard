@@ -6,10 +6,12 @@ Group: Applications/Databases
 License: BSD
 URL: https://github.com/tarantool/shard
 Source0: https://github.com/tarantool/shard/archive/%{version}/shard-%{version}.tar.gz
-BuildArch: noarch
-BuildRequires: tarantool >= 1.6.8.0
+BuildRequires: cmake >= 2.8
+BuildRequires: gcc >= 4.5
+BuildRequires: tarantool >= 1.7.2.0
 BuildRequires: tarantool-connpool >= 1.1.0
-Requires: tarantool >= 1.6.8.0
+BuildRequires: tarantool-devel
+Requires: tarantool >= 1.7.2.0
 Requires: tarantool-connpool >= 1.1.0
 
 # For tests
@@ -32,17 +34,21 @@ and automatically expells failed nodes from the cluster.
 %prep
 %setup -q -n shard-%{version}
 
+%build
+%cmake . -DCMAKE_BUILD_TYPE=RelWithDebInfo
+make %{?_smp_mflags}
+
 %check
 %if (0%{?fedora} >= 22)
 make test
 %endif
 
 %install
-install -d %{buildroot}%{_datarootdir}/tarantool/
-install -m 0644 shard.lua %{buildroot}%{_datarootdir}/tarantool/
+%make_install
 
 %files
-%{_datarootdir}/tarantool/shard.lua
+%{_libdir}/tarantool/*/
+%{_datarootdir}/tarantool/*/
 %doc README.md
 %{!?_licensedir:%global license %doc}
 %license LICENSE

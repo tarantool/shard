@@ -26,4 +26,4 @@ set_target_properties(driver PROPERTIES PREFIX "" OUTPUT_NAME "driver")
 #    COMMAND ${PROJECT_SOURCE_DIR}/test/mysql.test.lua)
 
 install(TARGETS driver LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/shard)
-install(FILES shard.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR}/shard)
+install(FILES shard.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
