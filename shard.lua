@@ -15,15 +15,16 @@ local mpffi = require'msgpackffi'
 
 -- tuple array merge driver
 local driver = require('driver')
+
 -- field type map
 local field_types = {
-    any			= 0,
-    unsigned		= 1,
-    string		= 2,
-    array		= 3,
-    number		= 4,
-    integer		= 5,
-    scalar		= 5
+    any       = 0,
+    unsigned  = 1,
+    string    = 2,
+    array     = 3,
+    number    = 4,
+    integer   = 5,
+    scala     = 5
 }
 
 local merger = {}
@@ -35,8 +36,11 @@ local function merge_new(key_parts)
             error('Invalid field number')
         end
         if field_types[v.type] ~= nil then
-            parts[part_no] = {fieldno = v.fieldno - 1, type = field_types[v.type]}
-	    part_no = part_no + 1
+            parts[part_no] = {
+                fieldno = v.fieldno - 1,
+                type = field_types[v.type]
+            }
+            part_no = part_no + 1
         else
             error('Unknow field type: ' .. v.type)
         end
@@ -44,9 +48,16 @@ local function merge_new(key_parts)
     local merger = driver.merge_new(parts)
     ffi.gc(merger, driver.merge_del)
     return {
-        start = function (sources, order) return driver.merge_start(merger, sources, order) end,
-        cmp = function (key) return driver.merge_cmp(merger, key) end,
-        next = function () return driver.merge_next(merger) end }
+        start = function (sources, order)
+            return driver.merge_start(merger, sources, order)
+        end,
+        cmp = function (key)
+            return driver.merge_cmp(merger, key)
+        end,
+        next = function ()
+            return driver.merge_next(merger)
+        end
+    }
 end
 
 local function key_create(data)
@@ -133,7 +144,9 @@ local function create_queue(fun, workers)
     local channel_size = math.min(workers, redundancy)
     local ch = fiber.channel(workers)
     local chj = fiber.channel(workers)
-    local self = setmetatable({ ch = ch, chj = chj, workers = workers, fun=fun }, queue_mt)
+    local self = setmetatable({
+        ch = ch, chj = chj, workers = workers, fun = fun
+    }, queue_mt)
     for i=1,workers do
         fiber.create(queue_handler, self, fun)
     end
@@ -156,7 +169,7 @@ local function queue(fun, workers)
     if len > 0 then
         local result = list[len]
         list[len] = nil
-	list.n = list.n - 1
+        list.n = list.n - 1
         return result
     end
     return create_queue(fun, workers)
@@ -222,12 +235,7 @@ end
 
 -- main shards search function
 local function shard(key, include_dead, use_old)
-    local num
-    if type(key) == 'number' then
-        num = key
-    else
-        num = digest.crc32(key)
-    end
+    local num = type(key) == 'number' and key or digest.crc32(key)
     local max_shards = shards_n
     -- if we want to find shard in old mapping
     if use_old then
@@ -241,8 +249,8 @@ local function shard(key, include_dead, use_old)
         -- GH-72
         -- we need to save shards state during maintenance
         -- client will recive error "shard is unavailable"
-        if maintenance[srv.id] ~= nil
-                or pool:server_is_ok(srv) or include_dead then
+        if maintenance[srv.id] ~= nil or pool:server_is_ok(srv) or
+           include_dead then
             res[k] = srv
             k = k + 1
         end
@@ -250,16 +258,16 @@ local function shard(key, include_dead, use_old)
     return res
 end
 
-function shard_status()
+local function shard_status()
     local result = {
         online = {},
         offline = {},
         maintenance = maintenance
     }
-    for j=1, #shards do
-         local srd =shards[j]
-         for i=1, redundancy do
-             local s = {uri=srd[i].uri, id=srd[i].id}
+    for j = 1, #shards do
+         local srd = shards[j]
+         for i = 1, redundancy do
+             local s = { uri = srd[i].uri, id = srd[i].id }
              if srd[i].conn:is_connected() then
                  table.insert(result.online, s)
              else
@@ -270,7 +278,7 @@ function shard_status()
     return result
 end
 
-function is_valid_index(name, index_data, index_no, strict)
+local function is_valid_index(name, index_data, index_no, strict)
     local index = box.space[name].index[index_no]
     if strict == nil then
         strict = true
@@ -306,7 +314,7 @@ function is_valid_index(name, index_data, index_no, strict)
     return true
 end
 
-function schema_worker()
+local function schema_worker()
     fiber.name('schema_worker')
 
     local actions = {
@@ -345,7 +353,7 @@ function schema_worker()
     end
 end
 
-function update_space(space)
+local function update_space(space)
     local obj = box.space[space.name]
     for i, index in pairs(space.index) do
         if obj ~= nil and obj.index[index.id] == nil then
@@ -367,7 +375,7 @@ function update_space(space)
     return true
 end
 
-function update_spaces(config)
+local function update_spaces(config)
     local result = true
     for _, space in pairs(config) do
         result = result and update_space(space)
@@ -401,7 +409,7 @@ local function rollback(operation)
     rollback_actions[name]()
 end
 
-function rollback_schema()
+local function rollback_schema()
     local manager = box.space.cluster_manager
     local ops = manager:select({}, {iterator='REQ'})
     for _, operation in pairs(ops) do
@@ -411,12 +419,12 @@ function rollback_schema()
     return true
 end
 
-function commit_schema()
+local function commit_schema()
     box.space.cluster_manager:truncate()
     return true
 end
 
-function drop_space(space_name)
+local function drop_space(space_name)
     if box.space[space_name] == nil then
         return false, 'Space does not exists'
     end
@@ -427,7 +435,7 @@ function drop_space(space_name)
     return true
 end
 
-function drop_index(space_name, index_name)
+local function drop_index(space_name, index_name)
     local obj = box.space[space_name]
     if obj == nil then
         return false, 'Space does not exists'
@@ -451,7 +459,7 @@ function drop_index(space_name, index_name)
     return true
 end
 
-function create_spaces(config)
+local function create_spaces(config)
     local manager = box.space.cluster_manager
 
     for i, space in pairs(config) do
@@ -468,7 +476,7 @@ function create_spaces(config)
     return true
 end
 
-function validate_sources(config, strict)
+local function validate_sources(config, strict)
     for i, space in pairs(config) do
         if box.space[space.name] == nil then
             return false, {name=space.name, index=nil}
@@ -680,7 +688,7 @@ local function transfer(self, space, worker, data, force)
     end
 end
 
-function force_transfer(space_name, index)
+local function force_transfer(space_name, index)
     local space = box.space[space_name]
     if space == nil then
         return false
@@ -856,7 +864,7 @@ local function rsd_join()
     -- storages checker. Can be used in app servers
     fiber.name('Resharding waiter')
     while true do
-        local cluster = remote_resharding_state()
+        local cluster = _G.remote_resharding_state()
         local in_progress = 0
         for i, node in pairs(cluster) do
             local response = node.data[1][1]
@@ -879,29 +887,25 @@ local function set_rsd()
     fiber.create(rsd_join)
 end
 
-function remote_append(servers)
-    return cluster_operation('append_shard', servers)
-end
-
-function remote_resharding_state()
+_G.remote_resharding_state = function()
     local result = {}
-    for j=1, #shards do
-         local srd =shards[j]
-         for i=1, redundancy do
-                 local res = {uri=srd[i].uri}
-                 local ok, err = pcall(function()
-                     local conn = srd[i].conn
-                     res.data = conn[nb_call](
-                         conn, 'resharding_status'
-                     )
-                end)
-                table.insert(result, res)
+    for j = 1, #shards do
+         local srd = shards[j]
+         for i = 1, redundancy do
+               local res = { uri = srd[i].uri }
+               local ok, err = pcall(function()
+                   local conn = srd[i].conn
+                   res.data = conn[nb_call](
+                       conn, 'resharding_status'
+                   )
+              end)
+              table.insert(result, res)
          end
     end
     return result
 end
 
-function resharding_status()
+local function resharding_status()
     local status = box.space.sharding:get{RSD_STATE}
     if status ~= nil then
         status = status[2] == 2
@@ -920,7 +924,7 @@ function resharding_status()
     }
 end
 
-function append_shard(servers, is_replica, start_waiter)
+local function append_shard(servers, is_replica, start_waiter)
     if #servers ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
@@ -957,7 +961,7 @@ function append_shard(servers, is_replica, start_waiter)
     return true
 end
 
-function get_zones()
+local function get_zones()
     local result = {}
     for z_name, zone in pairs(shards) do
         result[z_name] = {}
@@ -1028,10 +1032,10 @@ local function shard_swap(group_id, shard_id)
 end
 
 -- join node by id in this shard
-function join_shard(id)
-    for j=1, #shards do
-         local srd =shards[j]
-         for i=1, redundancy do
+local function join_shard(id)
+    for j = 1, #shards do
+         local srd = shards[j]
+         for i = 1, redundancy do
              if srd[i].id == id then
                  -- swap RO/RW shards
                  local to_join = srd[i]
@@ -1046,7 +1050,7 @@ function join_shard(id)
     return false
 end
 
-function unjoin_shard(id)
+local function unjoin_shard(id)
     -- In maintenance mode shard is available
     -- but client will recive erorrs using this shard
     maintenance[id] = true
@@ -1058,7 +1062,7 @@ local function on_action(self, msg)
     log.info(msg)
 end
 
-function cluster_operation(func_name, ...)
+local function cluster_operation(func_name, ...)
     local jlog = {}
     local q_args = {...}
     local all_ok = true
@@ -1109,12 +1113,16 @@ end
 -- 1. Create new replica and wait lsn
 -- 2. Join storage cluster
 -- 3. Join front cluster
-function remote_join(id)
+local function remote_join(id)
     return cluster_operation("join_shard", id)
 end
 
-function remote_unjoin(id)
+local function remote_unjoin(id)
     return cluster_operation("unjoin_shard", id)
+end
+
+local function remote_append(servers)
+    return cluster_operation("append_shard", servers)
 end
 
 -- base remote operation on space
@@ -1153,7 +1161,7 @@ local function index_call(self, space, server, operation,
     end, ...)
 end
 
-function merge_sort(results, index_fields, limits, cut_index)
+local function merge_sort(results, index_fields, limits, cut_index)
     local result = {}
     if cut_index == nil then
         cut_index = {}
@@ -1330,7 +1338,7 @@ end
 --    return shard_obj[space]:select(key)
 --end
 
-function transfer_wait(space, key)
+local function transfer_wait(space, key)
     if not reshard_works() then
         return false
     end
@@ -1368,10 +1376,8 @@ local function request(self, space, operation, tuple_id, ...)
         nodes = lookup(self, space, tuple_id, ...)
     end
 
-    k = 1
-    for i, server in ipairs(nodes) do
-        result[k] = single_call(self, space, server, operation, ...)
-        k = k + 1
+    for _, server in ipairs(nodes) do
+        table.insert(result, single_call(self, space, server, operation, ...))
         if configuration.replication == true then
             break
         end
@@ -1393,12 +1399,12 @@ end
 
 local function find_server_in_shard(shard, hint)
     local srv = shard[hint]
-    if server_is_ok(srv) then
+    if pool:server_is_ok(srv) then
         return srv
     end
-    for i=1,redundancy do
+    for i = 1, redundancy do
         srv = shard[i]
-        if server_is_ok(srv) then
+        if pool:server_is_ok(srv) then
            return srv
         end
     end
@@ -1431,7 +1437,7 @@ local function q_select(self, space, index, args)
     local zone = math.floor(math.random() * redundancy) + 1
     local tuples = {}
         local q = queue(broadcast_select, shards_n)
-    for i=1,shards_n do
+    for i = 1, shards_n do
         local srv = find_server_in_shard(shards[i], zone)
         local task = {server = srv, space = space, index = index,
                       args = args, result = tuples }
@@ -1454,7 +1460,7 @@ local function q_call(proc, args)
         local q = queue(broadcast_call, shards_n)
     local tuples = {}
     local zone = math.floor(math.random() * redundancy) + 1
-    for i=1,shards_n do
+    for i = 1, shards_n do
         local srv = find_server_in_shard(shards[i], zone)
         local task = { server = srv, proc = proc, args = args,
                       result = tuples }
@@ -1465,7 +1471,7 @@ local function q_call(proc, args)
 end
 
 -- execute operation, call from remote node
-function execute_operation(operation_id)
+local function execute_operation(operation_id)
     log.debug('EXEC_OP')
     -- execute batch
     box.begin()
@@ -1571,7 +1577,7 @@ local function queue_request(self, space, operation, operation_id, tuple_id, ...
     end
 end
 
-function find_operation(id)
+local function find_operation(id)
     log.debug('FIND_OP')
     return box.space.operations:get(id)[2]
 end
@@ -1598,9 +1604,9 @@ local function check_operation(self, space, operation_id, tuple_id)
         end
         if failed == nil then
             if task_status == STATE_INPROGRESS then
-                q = queue(ack_operation, redundancy)
+                local q = queue(ack_operation, redundancy)
                 for _, server in ipairs(shard(tuple_id)) do
-                    q:put({id=operation_id, server=server})
+                    q:put({ id = operation_id, server = server })
                 end
                 q:join()
             end
@@ -1635,7 +1641,8 @@ local function next_id(space)
         if tuple == nil then
             next_id = server_id
         else
-            next_id = math.floor((tuple[1]+ 2 * servers_n+1)/servers_n)*servers_n + server_id
+            next_id = math.floor((tuple[1] + 2 * shards_n + 1) / shards_n)
+            next_id = next_id * shards_n + server_id
         end
         _schema:insert{key, next_id}
     else
@@ -1675,7 +1682,7 @@ local function update(self, space, key, data)
 end
 
 local function q_insert(self, space, operation_id, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     queue_request(self, space, 'insert', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -1688,7 +1695,7 @@ local function q_auto_increment(self, space, operation_id, data)
 end
 
 local function q_replace(self, space, operation_id, data)
-    tuple_id = data[1]
+    local tuple_id = data[1]
     queue_request(self, space, 'replace', operation_id, tuple_id, data)
     return box.tuple.new(data)
 end
@@ -1755,7 +1762,7 @@ local function wait_table_fill()
     return pool:wait_table_fill()
 end
 
-local function create_spaces(cfg)
+local function init_create_spaces(cfg)
     if box.space.operations == nil then
         local operations = box.schema.create_space('operations')
         operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
@@ -1939,7 +1946,7 @@ end
 
 -- init shard, connect with servers
 local function init(cfg, callback)
-    create_spaces(cfg)
+    init_create_spaces(cfg)
     log.info('Sharding initialization started...')
     -- set constants
     pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
@@ -1968,8 +1975,8 @@ local function init(cfg, callback)
     return true
 end
 
-local function len()
-    return shards_n
+local function len(self)
+    return self.shards_n
 end
 
 local function has_unfinished_operations()
@@ -1991,6 +1998,34 @@ local function wait_epoch(epoch)
     return pool:wait_epoch(epoch)
 end
 
+-- declare global functions
+_G.append_shard      = append_shard
+_G.create_spaces     = create_spaces
+_G.update_spaces     = update_spaces
+_G.join_shard        = join_shard
+_G.unjoin_shard      = unjoin_shard
+_G.commit_schema     = commit_schema
+_G.rollback_schema   = rollback_schema
+_G.resharding_status = resharding_status
+_G.remote_append     = remote_append
+_G.remote_join       = remote_join
+_G.remote_unjoin     = remote_unjoin
+_G.drop_space        = drop_space
+_G.drop_index        = drop_index
+
+_G.find_operation    = find_operation
+_G.transfer_wait     = transfer_wait
+
+_G.cluster_operation = cluster_operation
+_G.execute_operation = execute_operation
+_G.force_transfer    = force_transfer
+_G.get_zones         = get_zones
+_G.is_valid_index    = is_valid_index
+_G.merge_sort        = merge_sort
+_G.shard_status      = shard_status
+_G.update_space      = update_space
+_G.validate_sources  = validate_sources
+
 shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
@@ -1999,7 +2034,6 @@ shard_obj = {
 
     shards = shards,
     shards_n = shards_n,
-    servers_n = servers_n,
     len = len,
     redundancy = redundancy,
     is_connected = is_connected,
