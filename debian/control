@@ -3,8 +3,9 @@ Priority: optional
 Section: database
 Maintainer: Roman Tsisyk <roman@tarantool.org>
 Build-Depends: debhelper (>= 9),
-               tarantool (>= 1.6.8.0),
-               tarantool-connpool (>= 1.1.0)
+               tarantool (>= 1.7.2.0),
+               tarantool-connpool (>= 1.1.0),
+               tarantool-dev (>= 1.7.2.0)
 Standards-Version: 3.9.6
 Homepage: https://github.com/tarantool/shard
 Vcs-Git: git://github.com/tarantool/shard.git
