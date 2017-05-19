@@ -1129,7 +1129,12 @@ end
 local function space_call(self, space, server, fun, ...)
     local result = nil
     local status, reason = pcall(function(...)
-        local space_obj = server.conn:timeout(5 * REMOTE_TIMEOUT).space[space]
+        local conn = server.conn:timeout(5 * REMOTE_TIMEOUT)
+        local space_obj = conn.space[space]
+        if space_obj == nil then
+            conn:reload_schema()
+            space_obj = conn.space[space]
+        end
         result = fun(space_obj, ...)
     end, ...)
     if not status then
