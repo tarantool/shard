@@ -20,6 +20,10 @@ include_directories(${TARANTOOL_INCLUDE_DIRS})
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -Wextra")
 
+if(APPLE)
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -undefined suppress -flat_namespace")
+endif(APPLE)
+
 add_library(driver SHARED driver.c msgpuck.c hints.c)
 set_target_properties(driver PROPERTIES PREFIX "" OUTPUT_NAME "driver")
 #add_custom_target(check

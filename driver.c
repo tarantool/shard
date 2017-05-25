@@ -338,7 +338,7 @@ luaopen_driver(lua_State *L)
 	luaL_cdef(L, "struct merger;");
 	merger_type_id = luaL_ctypeid(L, "struct merger&");
 	lua_newtable(L);
-	static const struct luaL_reg meta [] = {
+	static const struct luaL_Reg meta [] = {
 		{"merge_new", lbox_merger_new},
 		{"merge_start", lbox_merger_start},
 		{"merge_cmp", lbox_merger_cmp},
