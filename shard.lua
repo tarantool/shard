@@ -1889,6 +1889,7 @@ local function enable_operations()
     setmetatable(shard_obj, {
         __index = function (self, space)
             return {
+                name = space,
                 auto_increment = function(this, ...)
                     return self.auto_increment(self, space, ...)
                 end,
