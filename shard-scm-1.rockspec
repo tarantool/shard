@@ -14,11 +14,7 @@ dependencies = {
     'connpool >= 1.1';
 }
 build = {
-    type = 'builtin',
-
-    modules = {
-        ['shard'] = 'shard.lua'
-    }
+    type = 'cmake'
 }
 
 -- vim: syntax=lua

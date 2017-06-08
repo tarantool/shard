@@ -333,7 +333,7 @@ lbox_merger_del(lua_State *L)
 
 
 LUA_API int
-luaopen_driver(lua_State *L)
+luaopen_shard_driver(lua_State *L)
 {
 	luaL_cdef(L, "struct merger;");
 	merger_type_id = luaL_ctypeid(L, "struct merger&");

@@ -14,7 +14,7 @@ local buffer = require('buffer')
 local mpffi = require'msgpackffi'
 
 -- tuple array merge driver
-local driver = require('driver')
+local driver = require('shard.driver')
 
 -- field type map
 local field_types = {
@@ -1884,7 +1884,7 @@ local function enable_operations()
     -- set helpers
     shard_obj.check_operation = check_operation
     shard_obj.get_heartbeat = get_heartbeat
- 
+
     -- enable easy spaces access
     setmetatable(shard_obj, {
         __index = function (self, space)
