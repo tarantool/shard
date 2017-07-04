@@ -244,6 +244,11 @@ local function shard(key, include_dead, use_old)
     local shard = shards[1 + digest.guava(num, max_shards)]
     local res = {}
     local k = 1
+
+    if shard == nil then
+        return nil
+    end
+
     for i = 1, redundancy do
         local srv = shard[redundancy - i + 1]
         -- GH-72
@@ -925,7 +930,15 @@ local function resharding_status()
 end
 
 local function append_shard(servers, is_replica, start_waiter)
-    if #servers ~= redundancy then
+    local non_arbiters = {}
+
+    for _, candidate in ipairs(zone.list) do
+        if not candidate.arbiter then
+            table.insert(non_arbiters, candidate)
+        end
+    end
+
+    if #non_arbiters ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
     -- Turn on resharding mode
@@ -951,7 +964,10 @@ local function append_shard(servers, is_replica, start_waiter)
         pool:connect(shards_n*redundancy - id + 1, server)
         local zone = pool.servers[server.zone]
         zone.list[zone.n].zone_name = server.zone
-        table.insert(shards[shards_n], zone.list[zone.n])
+
+        if not server.arbiter then
+            table.insert(shards[shards_n], zone.list[zone.n])
+        end
     end
     if not is_replica then
         box.space.sharding:replace{RSD_STATE, 2}
@@ -1813,7 +1829,16 @@ local function shard_mapping(zones)
                 shards[shards_n] = {}
             end
             local shard = shards[shards_n]
-            local srv = zone.list[server_id]
+            local non_arbiters = {}
+
+            for _, candidate in ipairs(zone.list) do
+                if not candidate.arbiter then
+                    table.insert(non_arbiters, candidate)
+                end
+            end
+
+            local srv = non_arbiters[server_id]
+
             -- we must double check that the same
             for _, v in pairs(shard) do
                 if srv == nil then
