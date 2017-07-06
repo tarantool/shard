@@ -932,7 +932,7 @@ end
 local function append_shard(servers, is_replica, start_waiter)
     local non_arbiters = {}
 
-    for _, candidate in ipairs(zone.list) do
+    for _, candidate in ipairs(servers) do
         if not candidate.arbiter then
             table.insert(non_arbiters, candidate)
         end
@@ -950,7 +950,7 @@ local function append_shard(servers, is_replica, start_waiter)
     shards_n = shards_n + 1
 
     -- connect pair to shard
-    for id, server in pairs(servers) do
+    for id, server in pairs(non_arbiters) do
         -- create zone if needed
         if pool.servers[server.zone] == nil then
             pool.zones_n = pool.zones_n + 1
