@@ -12,7 +12,6 @@ used. The shard key is determined automatically based on sharded space
 description.
 
 ## Installation
--------
 1. Add [tarantool repository](http://tarantool.org/download.html) for
    yum or apt
 2. Install
