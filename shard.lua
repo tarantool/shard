@@ -2077,6 +2077,7 @@ shard_obj = {
     queue = queue,
     init = init,
     shard = shard,
+    pool = pool,
     check_shard = check_shard,
     enable_resharding = function(self)
         fiber.create(schema_worker)
