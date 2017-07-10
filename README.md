@@ -334,9 +334,7 @@ once execution semantics) and most be provided by the user. The status
 of the operation can always be checked, given its operation id, and
 provided that it has not been pruned from operations space.
 
-
-
-### `shard.space.q_insert(operation_id, tuple)`
+#### `shard.space.q_insert(operation_id, tuple)`
 
 Inserts `tuple` to the shard space.
 
