@@ -1158,11 +1158,7 @@ local function space_call(self, space, server, fun, ...)
             'failed to execute operation on %s: %s',
             server.uri, reason
         )
-        log.error(err)
-        result = {status=false, error=err}
-        if not server.conn:is_connected() then
-            log.error("server %s is offline", server.uri)
-        end
+        error(err)
     end
     return result
 end
