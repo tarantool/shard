@@ -283,233 +283,6 @@ local function shard_status()
     return result
 end
 
-local function is_valid_index(name, index_data, index_no, strict)
-    local index = box.space[name].index[index_no]
-    if strict == nil then
-        strict = true
-    end
-
-    if index_data == nil or index == nil then
-        return false
-    end
-
-    if #index.parts ~= #index_data.parts then
-        return false
-    end
-    for i, part in pairs(index.parts) do
-        local to_check = index_data.parts[i]
-        if to_check == nil or
-                part.type ~= to_check.type or
-                part.fieldno ~= to_check.fieldno then
-            return false
-        end
-    end
-
-    if not strict then
-        return true
-    end
-    local check = {
-        'unique', 'id', 'space_id', 'name', 'type'
-    }
-    for _, key in pairs(check) do
-        if index[key] ~= index_data[key] then
-            return false
-        end
-    end
-    return true
-end
-
-local function schema_worker()
-    fiber.name('schema_worker')
-
-    local actions = {
-        create_index = function(entity, args)
-            local s_name, i_name = entity[1], entity[2]
-            box.space[s_name]:create_index(i_name, args)
-        end,
-        create_space = function(entity, args)
-            box.schema.create_space(entity, args)
-        end,
-        drop_index = function(entity, args)
-            local s_name, i_name = entity[1], entity[2]
-            box.space[s_name].index[i_name]:drop()
-        end,
-        drop_space = function(entity, args)
-            box.space[entity]:drop()
-        end
-    }
-    while true do
-        for _, op in box.space.cluster_manager:pairs() do
-            local status, func, entity, args = op[2], op[3], op[4], op[5]
-            if status ~= STATE_HANDLED then
-                local ok, err = pcall(function()
-                    actions[func](entity, args)
-                    box.space.cluster_manager:update(
-                        op[1], {{'=', 2, STATE_HANDLED}}
-                    )
-                end)
-                if not ok then
-                    log.info('Failed to apply schema changes: %s', err)
-                end
-            end
-        end
-
-        fiber.sleep(0.01)
-    end
-end
-
-local function update_space(space)
-    local obj = box.space[space.name]
-    for i, index in pairs(space.index) do
-        if obj ~= nil and obj.index[index.id] == nil then
-            local parts = {}
-            for _, part in pairs(index.parts) do
-                table.insert(parts, part.fieldno)
-                table.insert(parts, part.type)
-            end
-            box.space.cluster_manager:auto_increment{STATE_NEW, 'create_index',
-                {space.name, index.name}, {
-                    unique=index.unique,
-                    id=index.id,
-                    type=index.type,
-                    parts=parts
-                }
-            }
-        end
-    end
-    return true
-end
-
-local function update_spaces(config)
-    local result = true
-    for _, space in pairs(config) do
-        result = result and update_space(space)
-    end
-    return result
-end
-
-local function rollback(operation)
-    local name, entity, args = operation[3], operation[4], operation[5]
-    local manager = box.space.cluster_manager
-
-    local rollback_actions = {
-        create_space = function()
-            box.space[entity]:drop()
-        end,
-        create_index = function()
-            local s_name, i_name = entity[1], entity[2]
-            box.space[s_name].index[i_name]:drop()
-        end,
-        drop_space = function()
-            -- we don't need to create empty space
-        end,
-        drop_index = function()
-            local s_name, i_name = entity[1], entity[2]
-            local sp = box.space[s_name]
-            if sp ~= nil then
-                sp:create_index(i_name, args)
-            end
-        end
-    }
-    rollback_actions[name]()
-end
-
-local function rollback_schema()
-    local manager = box.space.cluster_manager
-    local ops = manager:select({}, {iterator='REQ'})
-    for _, operation in pairs(ops) do
-        rollback(operation)
-    end
-    manager:truncate()
-    return true
-end
-
-local function commit_schema()
-    box.space.cluster_manager:truncate()
-    return true
-end
-
-local function drop_space(space_name)
-    if box.space[space_name] == nil then
-        return false, 'Space does not exists'
-    end
-    box.space.cluster_manager:auto_increment{
-        STATE_NEW, 'drop_space',
-        space_name
-    }
-    return true
-end
-
-local function drop_index(space_name, index_name)
-    local obj = box.space[space_name]
-    if obj == nil then
-        return false, 'Space does not exists'
-    end
-    local index = obj.index[index_name]
-    if index == nil then
-        return false, 'Index does not exists'
-    end
-    local parts = {}
-    for _, part in pairs(index.parts) do
-        table.insert(parts, part.fieldno)
-        table.insert(parts, part.type)
-    end
-    box.space.cluster_manager:auto_increment{STATE_NEW, 'drop_index',
-        {space_name, index_name}, {
-            unique=index.unique,
-            type=index.type,
-            parts=parts
-        }
-    }
-    return true
-end
-
-local function create_spaces(config)
-    local manager = box.space.cluster_manager
-
-    for i, space in pairs(config) do
-        if box.space[space.name] ~= nil then
-            return false, 'Space already exists'
-        end
-        --_ = box.schema.create_space(space.name, space.options)
-        manager:auto_increment{
-            STATE_NEW, 'create_space',
-            space.name, space.options
-        }
-        update_space(space)
-    end
-    return true
-end
-
-local function validate_sources(config, strict)
-    for i, space in pairs(config) do
-        if box.space[space.name] == nil then
-            return false, {name=space.name, index=nil}
-        end
-        for k,v in pairs(box.space[space.name].index) do
-            if type(k) == 'number' then
-                local is_valid = is_valid_index(
-                    space.name, space.index[k], k, strict
-                )
-                if space.index[k] == nil or not is_valid  then
-                    return false, {name=space.name, index=k}
-                end
-            end
-        end
-        for k,v in pairs(space.index) do
-            if type(k) == 'number' then
-                local is_valid = is_valid_index(
-                    space.name, space.index[k], k, strict
-                )
-                if space.index[k] == nil or not is_valid  then
-                    return false, {name=space.name, index=k}
-                end
-            end
-        end
-    end
-    return true
-end
-
 local function drop_rsd_index(worker, space)
     lock_transfer()
     if worker.index[2] ~= nil then
@@ -657,9 +430,10 @@ local function is_reshardable(space_name)
         return false
     end
     local reserved = {
-        operations=1, sharding=1,
-        sh_worker=1, cluster_manager=1,
-        sh_worker_vinyl=1
+        sharding        = true,
+        sh_worker       = true,
+        cluster_manager = true,
+        sh_worker_vinyl = true,
     }
     return reserved[space_name] == nil
 end
@@ -1783,35 +1557,73 @@ local function wait_table_fill()
     return pool:wait_table_fill()
 end
 
-local function init_create_spaces(cfg)
+local function shard_init_v01()
     if box.space.operations == nil then
         local operations = box.schema.create_space('operations')
-        operations:create_index('primary', {type = 'hash', parts = {1, 'str'}})
-        operations:create_index('queue', {type = 'tree', parts = {2, 'num', 1, 'str'}})
+        operations:create_index('primary', {
+            type  = 'hash',
+            parts = { 1, 'str' }
+        })
+        operations:create_index('queue', {
+            type  = 'tree',
+            parts = { 2, 'num', 1, 'str' }
+        })
     end
     if box.space.cluster_manager == nil then
         local cluster_ops = box.schema.create_space('cluster_manager')
-        cluster_ops:create_index('primary', {type = 'tree', parts = {1, 'num'}})
-        cluster_ops:create_index(
-            'status', {type = 'tree', parts = {2, 'num'},
-            unique=false}
-        )
+        cluster_ops:create_index('primary', {
+            type  = 'tree',
+            parts = { 1, 'num' }
+        })
+        cluster_ops:create_index('status', {
+            type   = 'tree',
+            parts  = { 2, 'num' },
+            unique = false
+        })
     end
     if box.space.sh_worker == nil then
         local sh_space = box.schema.create_space('sh_worker')
-        sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
-        sh_space:create_index('status', {type = 'tree', parts = {2, 'num'}, unique=false})
+        sh_space:create_index('primary', {
+            type  = 'tree',
+            parts = { 1, 'num' }
+        })
+        sh_space:create_index('status', {
+            type   = 'tree',
+            parts  = { 2, 'num' },
+            unique = false
+        })
     end
     if box.space.sh_worker_vinyl == nil then
-        local sh_space = box.schema.create_space('sh_worker_vinyl', {engine='vinyl'})
-        sh_space:create_index('primary', {type = 'tree', parts = {1, 'num'}})
-        sh_space:create_index('status', {type = 'tree', parts = {2, 'num'}, unique=false})
+        local sh_space = box.schema.create_space('sh_worker_vinyl', {
+            engine = 'vinyl'
+        })
+        sh_space:create_index('primary', {
+            type  = 'tree',
+            parts = { 1, 'num' }
+        })
+        sh_space:create_index('status', {
+            type   = 'tree',
+            parts  = {2, 'num'},
+            unique = false
+        })
     end
     -- sharding manager settings
     if box.space.sharding == nil then
         local sharding = box.schema.create_space('sharding')
-        sharding:create_index('primary', {type = 'tree', parts = {1, 'str'}})
+        sharding:create_index('primary', {
+            type  = 'tree',
+            parts = { 1, 'str' }
+        })
     end
+end
+
+local function shard_init_v02()
+    box.space.cluster_manager:drop()
+end
+
+local function init_create_spaces(cfg)
+    box.once('shard_init_v01', shard_init_v01)
+    box.once('shard_init_v02', shard_init_v02)
     configuration = cfg
 end
 
@@ -2031,12 +1843,8 @@ end
 
 -- declare global functions
 _G.append_shard      = append_shard
-_G.create_spaces     = create_spaces
-_G.update_spaces     = update_spaces
 _G.join_shard        = join_shard
 _G.unjoin_shard      = unjoin_shard
-_G.commit_schema     = commit_schema
-_G.rollback_schema   = rollback_schema
 _G.resharding_status = resharding_status
 _G.remote_append     = remote_append
 _G.remote_join       = remote_join
@@ -2051,11 +1859,8 @@ _G.cluster_operation = cluster_operation
 _G.execute_operation = execute_operation
 _G.force_transfer    = force_transfer
 _G.get_zones         = get_zones
-_G.is_valid_index    = is_valid_index
 _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
-_G.update_space      = update_space
-_G.validate_sources  = validate_sources
 
 shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
@@ -2080,7 +1885,6 @@ shard_obj = {
     pool = pool,
     check_shard = check_shard,
     enable_resharding = function(self)
-        fiber.create(schema_worker)
         fiber.create(resharding_worker, self)
         fiber.create(transfer_worker, self)
         log.info('Enabled resharding workers')
