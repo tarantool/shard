@@ -207,26 +207,26 @@ local maintenance = {}
 
 local function reshard_works()
     -- check that resharing started (used by shard function)
-    local mode = box.space.sharding:get{'RESHARDING'}
+    local mode = box.space._shard:get{'RESHARDING'}
     return mode ~= nil and mode[2] > 0
 end
 
 local function reshard_ready()
     -- check that new nodes are connected after resharing start
-    local mode = box.space.sharding:get{'RESHARDING'}
+    local mode = box.space._shard:get{'RESHARDING'}
     return mode ~= nil and mode[2] > 1
 end
 
 local function lock_transfer()
-    box.space.sharding:replace{'TRANSFER_LOCK', 1}
+    box.space._shard:replace{'TRANSFER_LOCK', 1}
 end
 
 local function unlock_transfer()
-    box.space.sharding:replace{'TRANSFER_LOCK', 0}
+    box.space._shard:replace{'TRANSFER_LOCK', 0}
 end
 
 local function is_transfer_locked()
-    local lock = box.space.sharding:get{'TRANSFER_LOCK'}
+    local lock = box.space._shard:get{'TRANSFER_LOCK'}
     if lock == nil then
         return false
     end
@@ -300,7 +300,7 @@ local function drop_rsd_index(worker, space)
 
     local parts = {}
     for i, part in pairs(space.index[0].parts) do
-        -- shift main index for sh_worker space
+        -- shift main index for _shard_worker space
         table.insert(parts, i + 2)
         table.insert(parts, part.type)
     end
@@ -372,7 +372,7 @@ local function hash_iter(space, worker, lookup, fun)
 end
 
 local function space_iteration(is_drop)
-    local mode = box.space.sharding:get(RSD_CURRENT)
+    local mode = box.space._shard:get(RSD_CURRENT)
     if mode == nil or mode[2] == '' then
         return
     end
@@ -383,9 +383,9 @@ local function space_iteration(is_drop)
 
     local space_name = mode[2]
     local space = box.space[space_name]
-    local aux_space = 'sh_worker'
+    local aux_space = '_shard_worker'
     if space.engine == 'vinyl' then
-        aux_space = 'sh_worker_vinyl'
+        aux_space = '_shard_worker_vinyl'
     end
     local worker = box.space[aux_space]
 
@@ -405,7 +405,7 @@ local function space_iteration(is_drop)
     end
 
     log.info('Found %d tuples', tuples)
-    box.space.sharding:replace{RSD_FINISHED, space_name}
+    box.space._shard:replace{RSD_FINISHED, space_name}
     return true
 end
 
@@ -429,13 +429,7 @@ local function is_reshardable(space_name)
     if space.engine == 'memtx' and space:len() == 0 then
         return false
     end
-    local reserved = {
-        sharding        = true,
-        sh_worker       = true,
-        cluster_manager = true,
-        sh_worker_vinyl = true,
-    }
-    return reserved[space_name] == nil
+    return true
 end
 
 local function transfer(self, space, worker, data, force)
@@ -472,9 +466,9 @@ local function force_transfer(space_name, index)
     if space == nil then
         return false
     end
-    local aux_space = 'sh_worker'
+    local aux_space = '_shard_worker'
     if space ~= nil and space.engine == 'vinyl' then
-        aux_space = 'sh_worker_vinyl'
+        aux_space = '_shard_worker_vinyl'
     end
     local worker = box.space[aux_space]
     local ok, err = pcall(function()
@@ -491,12 +485,12 @@ local function transfer_worker(self)
     wait_connection()
     while true do
         if reshard_ready() then
-            local cur_space = box.space.sharding:get(RSD_CURRENT)
+            local cur_space = box.space._shard:get(RSD_CURRENT)
             local space = box.space[cur_space[2]]
 
-            local aux_space = 'sh_worker'
+            local aux_space = '_shard_worker'
             if space ~= nil and space.engine == 'vinyl' then
-                aux_space = 'sh_worker_vinyl'
+                aux_space = '_shard_worker_vinyl'
             end
             local worker = box.space[aux_space]
 
@@ -529,14 +523,14 @@ local function wait_state(space, state)
 end
 
 local function wait_iteration()
-    wait_state(box.space.sh_worker, STATE_NEW)
-    wait_state(box.space.sh_worker_vinyl, STATE_NEW)
-    wait_state(box.space.sh_worker, STATE_INPROGRESS)
-    wait_state(box.space.sh_worker_vinyl, STATE_INPROGRESS)
+    wait_state(box.space._shard_worker, STATE_NEW)
+    wait_state(box.space._shard_worker_vinyl, STATE_NEW)
+    wait_state(box.space._shard_worker, STATE_INPROGRESS)
+    wait_state(box.space._shard_worker_vinyl, STATE_INPROGRESS)
 end
 
 local function rsd_init()
-    local sh = box.space.sharding
+    local sh = box.space._shard
     sh:replace{RSD_HANDLED, {}}
     sh:replace{RSD_CURRENT, ''}
     sh:replace{RSD_FINISHED, ''}
@@ -551,7 +545,7 @@ local function rsd_finalize()
     wait_iteration()
 
     log.info('Resharding complete')
-    local sh = box.space.sharding
+    local sh = box.space._shard
     sh:replace{RSD_STATE, 0}
     sh:replace{RSD_HANDLED, {}}
     sh:replace{RSD_CURRENT, ''}
@@ -587,11 +581,11 @@ end
 
 local function rsd_warmup(self)
     wait_connection()
-    local cur_space = box.space.sharding:get(RSD_CURRENT)[2]
+    local cur_space = box.space._shard:get(RSD_CURRENT)[2]
     local space = box.space[cur_space]
-    local worker_name = 'sh_worker'
+    local worker_name = '_shard_worker'
     if space.engine == 'vinyl' then
-        worker_name = 'sh_worker_vinyl'
+        worker_name = '_shard_worker_vinyl'
     end
     local worker = box.space[worker_name]
 
@@ -607,7 +601,7 @@ end
 
 local function resharding_worker(self)
     fiber.name('resharding')
-    local sh = box.space.sharding
+    local sh = box.space._shard
     local rs_state = sh:get(RSD_STATE)
     if rs_state == nil or rs_state[2] == 0 then
         rsd_init()
@@ -652,7 +646,7 @@ local function rsd_join()
                 break
             end
         end
-        box.space.sharding:replace{RDS_FLAG, in_progress}
+        box.space._shard:replace{RDS_FLAG, in_progress}
         if in_progress == 0 then
             log.info('Resharding state: off')
             return
@@ -662,7 +656,7 @@ local function rsd_join()
 end
 
 local function set_rsd()
-    box.space.sharding:replace{RDS_FLAG, 1}
+    box.space._shard:replace{RDS_FLAG, 1}
     fiber.create(rsd_join)
 end
 
@@ -685,16 +679,16 @@ _G.remote_resharding_state = function()
 end
 
 local function resharding_status()
-    local status = box.space.sharding:get{RSD_STATE}
+    local status = box.space._shard:get{RSD_STATE}
     if status ~= nil then
         status = status[2] == 2
     else
         status = false
     end
-    local spaces = box.space.sharding:get{RSD_HANDLED}[2]
-    local current = box.space.sharding:get{RSD_CURRENT}[2]
-    local worker_len = box.space.sh_worker.index[1]:count(STATE_NEW)
-    worker_len = worker_len + box.space.sh_worker_vinyl.index[1]:count(STATE_NEW)
+    local spaces = box.space._shard:get{RSD_HANDLED}[2]
+    local current = box.space._shard:get{RSD_CURRENT}[2]
+    local worker_len = box.space._shard_worker.index[1]:count(STATE_NEW)
+    worker_len = worker_len + box.space._shard_worker_vinyl.index[1]:count(STATE_NEW)
     return {
         status=status,
         spaces=spaces,
@@ -717,7 +711,7 @@ local function append_shard(servers, is_replica, start_waiter)
     end
     -- Turn on resharding mode
     if not is_replica then
-        box.space.sharding:replace{RSD_STATE, 1}
+        box.space._shard:replace{RSD_STATE, 1}
     end
     -- add new "virtual" shard and append server
     shards[shards_n + 1] = {}
@@ -744,7 +738,7 @@ local function append_shard(servers, is_replica, start_waiter)
         end
     end
     if not is_replica then
-        box.space.sharding:replace{RSD_STATE, 2}
+        box.space._shard:replace{RSD_STATE, 2}
     elseif start_waiter then
         set_rsd()
     end
@@ -1096,13 +1090,13 @@ local function lookup(self, space, tuple_id, ...)
 
     -- tuple was found let's check transfer state
     local result = index_call(
-        self, 'sharding', old_nodes[1],
+        self, '_shard', old_nodes[1],
         'select', 3, key
     )
     if #result == 0 then
         -- we must use old shard
         -- FIXME: probably prev iteration is finished
-        -- and we need to check CUR_SPACE or sharding:len()
+        -- and we need to check CUR_SPACE or _shard:len()
         return old_nodes
     end
 
@@ -1118,7 +1112,7 @@ local function lookup(self, space, tuple_id, ...)
 end
 
 local function is_transfered_space(space)
-    local mode = box.space.sharding:get('CUR_SPACE')
+    local mode = box.space._shard:get('CUR_SPACE')
     if mode == nil or mode[2] ~= space then
         return false
     end
@@ -1141,7 +1135,7 @@ local function transfer_wait(space, key)
             return true
         end
         local ok, err = pcall(function()
-            result = box.space.sharding.index[3]:get(key)
+            result = box.space._shard.index[3]:get(key)
         end)
         if not ok then
             -- if transfer finished it's not error
@@ -1266,7 +1260,7 @@ local function execute_operation(operation_id)
     log.debug('EXEC_OP')
     -- execute batch
     box.begin()
-    local tuple = box.space.operations:update(
+    local tuple = box.space._shard_operations:update(
         operation_id, {{'=', 2, STATE_INPROGRESS}}
     )
     local batch = tuple[3]
@@ -1280,7 +1274,7 @@ local function execute_operation(operation_id)
         local self = box.space[space]
         result = self[func_name](self, unpack(args))
     end
-    box.space.operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
+    box.space._shard_operations:update(operation_id, {{'=', 2, STATE_HANDLED}})
     box.commit()
 end
 
@@ -1289,7 +1283,7 @@ local function push_operation(task)
     local server = task.server
     local tuple = task.tuple
     log.debug('PUSH_OP')
-    server.conn:timeout(REMOTE_TIMEOUT).space.operations:insert(tuple)
+    server.conn:timeout(REMOTE_TIMEOUT).space._shard_operations:insert(tuple)
 end
 
 local function ack_operation(task)
@@ -1370,7 +1364,7 @@ end
 
 local function find_operation(id)
     log.debug('FIND_OP')
-    return box.space.operations:get(id)[2]
+    return box.space._shard_operations:get(id)[2]
 end
 
 local function check_operation(self, space, operation_id, tuple_id)
@@ -1617,9 +1611,27 @@ local function shard_init_v02()
     box.space.cluster_manager:drop()
 end
 
+local function shard_init_v03()
+    -- renaming memtx spaces
+    box.space.sharding:rename('_shard')
+    box.space.sh_worker:rename('_shard_worker')
+    box.space.operations:rename('_shard_operations')
+
+    -- it's better to create new vinyl space, move everything to it and
+    -- drop the old space
+    local new_sh_space = box.schema.create_space('_shard_worker_vinyl', { engine = 'vinyl' })
+    new_sh_space:create_index('primary', { type  = 'tree', parts = { 1, 'num' } })
+    new_sh_space:create_index('status', { type = 'tree', parts = {2, 'num'}, unique = false })
+    for record in box.space.sh_worker_vinyl:pairs() do
+        new_sh_space:replace(record)
+    end
+    box.space.sh_worker_vinyl:drop()
+end
+
 local function init_create_spaces(cfg)
     box.once('shard_init_v01', shard_init_v01)
     box.once('shard_init_v02', shard_init_v02)
+    box.once('shard_init_v03', shard_init_v03)
     configuration = cfg
 end
 
@@ -1819,7 +1831,7 @@ local function len(self)
 end
 
 local function has_unfinished_operations()
-    local tuple = box.space.operations.index.queue:min()
+    local tuple = box.space._shard_operations.index.queue:min()
     return tuple ~= nil and tuple[2] ~= STATE_HANDLED
 end
 
