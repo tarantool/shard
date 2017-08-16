@@ -267,8 +267,10 @@ local function shard_status()
     local result = {
         online = {},
         offline = {},
+        status = 'ok',
         maintenance = maintenance
     }
+    local online_shard = 0
     for j = 1, #shards do
          local srd = shards[j]
          for i = 1, redundancy do
@@ -277,8 +279,13 @@ local function shard_status()
                  table.insert(result.online, s)
              else
                  table.insert(result.offline, s)
+                 result.status = 'degraded'
              end
          end
+         if online_shard == #result.online then
+             result.status = 'offline'
+         end
+         online_shard = #result.online
     end
     return result
 end

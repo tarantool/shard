@@ -205,14 +205,19 @@ Wait until all shards are connected and operational.
 
 #### `shard_status()`
 
-Returns the status of all shards: whether they are online, offline or
+Returns the status of the entire cluster and status of all shards: whether they are online, offline or
 in maintenance.
+Field `status` can be the following values:
+* `ok` - all shards work
+* `degraded` - at least one node in a shard is down, but the shard still works
+* `offline` - one shard is completely down
 
 Example output:
 
 ```yaml
 ---
-- maintenance: []
+- status: ok
+  maintenance: []
   offline: []
   online:
   - uri: localhost:3301
