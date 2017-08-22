@@ -1856,8 +1856,6 @@ _G.resharding_status = resharding_status
 _G.remote_append     = remote_append
 _G.remote_join       = remote_join
 _G.remote_unjoin     = remote_unjoin
-_G.drop_space        = drop_space
-_G.drop_index        = drop_index
 
 _G.find_operation    = find_operation
 _G.transfer_wait     = transfer_wait
