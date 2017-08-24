@@ -913,7 +913,7 @@ end
 local function space_call(self, space, server, fun, ...)
     local result = nil
     local status, reason = pcall(function(...)
-        local conn = server.conn:timeout(5 * REMOTE_TIMEOUT)
+        local conn = server.conn
         local space_obj = conn.space[space]
         if space_obj == nil then
             conn:reload_schema()
@@ -1049,8 +1049,8 @@ end
 local function direct_call(self, server, func_name, ...)
     local result = nil
     local status, reason = pcall(function(...)
-        local conn = server.conn:timeout(REMOTE_TIMEOUT)
-        result = conn[nb_call](conn, func_name, ...)
+        local conn = server.conn
+        result = conn[nb_call](conn, func_name, ..., {timeout = REMOTE_TIMEOUT})
     end, ...)
     if not status then
         log.error('failed to call %s on %s: %s', func_name, server.uri, reason)
@@ -1172,11 +1172,11 @@ end
 
 local function broadcast_select(task)
     local c = task.server.conn
-    local index = c:timeout(REMOTE_TIMEOUT).space[task.space].index[task.index]
+    local index = c.space[task.space].index[task.index]
     local key = task.args[1]
     local offset =  task.args[2]
     local limit = task.args[3]
-    local tuples = index:select(key, { offset = offset, limit = limit })
+    local tuples = index:select(key, { offset = offset, limit = limit, timeout = REMOTE_TIMEOUT})
     for _, v in ipairs(tuples) do
         table.insert(task.result, v)
     end
@@ -1207,10 +1207,10 @@ local function q_select(self, space, index, args)
         local offset = args[2]
         local limit = args[3]
         local srv = shard(key)[1]
-        local i = srv.conn:timeout(REMOTE_TIMEOUT).space[space].index[index]
+        local i = srv.conn.space[space].index[index]
         log.info('%s.space.%s.index.%s:select{%s, {offset = %s, limit = %s}',
             srv.uri, space, index, json.encode(key), offset, limit)
-        local tuples = i:select(key, { offset = offset, limit = limit })
+        local tuples = i:select(key, { offset = offset, limit = limit, timeout = REMOTE_TIMEOUT })
         if tuples == nil then
             tuples = {}
         end
@@ -1233,9 +1233,8 @@ local function q_select(self, space, index, args)
 end
 
 local function broadcast_call(task)
-    local c = task.server.conn
-    local conn = c:timeout(REMOTE_TIMEOUT)
-    local tuples = conn[nb_call](conn, task.proc, unpack(task.args))
+    local conn = task.server.conn
+    local tuples = conn[nb_call](conn, task.proc, unpack(task.args), {timeout = REMOTE_TIMEOUT})
     for _, v in ipairs(tuples) do
         table.insert(task.result, v)
     end
@@ -1283,16 +1282,16 @@ local function push_operation(task)
     local server = task.server
     local tuple = task.tuple
     log.debug('PUSH_OP')
-    server.conn:timeout(REMOTE_TIMEOUT).space._shard_operations:insert(tuple)
+    server.conn.space._shard_operations:insert(tuple,{timeout = REMOTE_TIMEOUT})
 end
 
 local function ack_operation(task)
     log.debug('ACK_OP')
     local server = task.server
     local operation_id = task.id
-    local conn = server.conn:timeout(REMOTE_TIMEOUT)
+    local conn = server.conn
     conn[nb_call](
-        conn, 'execute_operation', operation_id
+        conn, 'execute_operation', operation_id, {timeout = REMOTE_TIMEOUT}
     )
 end
 
@@ -1376,9 +1375,9 @@ local function check_operation(self, space, operation_id, tuple_id)
         for _, server in pairs(shard(tuple_id)) do
             -- check that transaction is queued to all hosts
             local status, reason = pcall(function()
-                local conn = server.conn:timeout(REMOTE_TIMEOUT)
+                local conn = server.conn
                 task_status = conn[nb_call](
-                    conn, 'find_operation', operation_id
+                    conn, 'find_operation', operation_id, {timeout = REMOTE_TIMEOUT}
                 )[1][1]
             end)
             if not status or task_status == nil then
