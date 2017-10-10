@@ -234,7 +234,7 @@ local function is_transfer_locked()
 end
 
 -- main shards search function
-local function shard(key, include_dead, use_old)
+local function shard(key, use_old)
     local num = type(key) == 'number' and key or digest.crc32(key)
     local max_shards = shards_n
     -- if we want to find shard in old mapping
@@ -254,8 +254,7 @@ local function shard(key, include_dead, use_old)
         -- GH-72
         -- we need to save shards state during maintenance
         -- client will recive error "shard is unavailable"
-        if maintenance[srv.id] ~= nil or pool:server_is_ok(srv) or
-           include_dead then
+        if maintenance[srv.id] ~= nil or pool:server_is_ok(srv) then
             res[k] = srv
             k = k + 1
         end
@@ -314,7 +313,7 @@ end
 
 local function process_tuple(space, tuple, worker, lookup)
     local shard_id = tuple[space.index[0].parts[1].fieldno]
-    local old_sh = shard(shard_id, false, true)[1]
+    local old_sh = shard(shard_id, true)[1]
     local new_sh = shard(shard_id)[1]
     if new_sh.id == old_sh.id then
         return false
@@ -1078,7 +1077,7 @@ local function lookup(self, space, tuple_id, ...)
         return nodes
     end
 
-    local old_nodes = shard(tuple_id, false, true)
+    local old_nodes = shard(tuple_id, true)
     local old_data = single_call(self, space, old_nodes[1], 'select', key)
     if #old_data == 0 then
         -- tuple not found in old shard:
