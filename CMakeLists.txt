@@ -25,13 +25,7 @@ add_definitions("-D_GNU_SOURCE")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -Wextra")
 
-if(APPLE)
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -undefined suppress -flat_namespace")
-endif(APPLE)
-
-add_library(driver SHARED driver.c)
-set_target_properties(driver PROPERTIES PREFIX "" OUTPUT_NAME "driver")
-target_link_libraries(driver ${MSGPUCK_LIBRARIES})
-
-install(TARGETS driver LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/shard)
-install(FILES shard.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR})
+# Build module
+add_subdirectory(shard)
+# Enable tests
+add_subdirectory(test)
