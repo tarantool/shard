@@ -11,6 +11,7 @@ BuildRequires: gcc >= 4.5
 BuildRequires: tarantool >= 1.7.2.0
 BuildRequires: tarantool-connpool >= 1.1.0
 BuildRequires: tarantool-devel
+BuildRequires: msgpuck-devel >= 1.0.0
 Requires: tarantool >= 1.7.2.0
 Requires: tarantool-connpool >= 1.1.0
 
