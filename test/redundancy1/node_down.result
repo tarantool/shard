@@ -4,11 +4,11 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("create server master1 with script='redundancy1/master1.lua', lua_libs='redundancy1/lua/shard.lua'")
+test_run:cmd("create server master1 with script='redundancy1/master1.lua'")
 ---
 - true
 ...
-test_run:cmd("create server master2 with script='redundancy1/master2.lua', lua_libs='redundancy1/lua/shard.lua'")
+test_run:cmd("create server master2 with script='redundancy1/master2.lua'")
 ---
 - true
 ...
@@ -66,7 +66,7 @@ shard.wait_epoch(2)
 ...
 shard.is_table_filled()
 ---
-- false
+- true
 ...
 test_run:cmd("switch master2")
 ---
@@ -77,7 +77,7 @@ shard.wait_epoch(2)
 ...
 shard.is_table_filled()
 ---
-- false
+- true
 ...
 test_run:cmd("switch default")
 ---

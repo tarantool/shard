@@ -4,11 +4,11 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("create server master1 with script='redundancy2/master1.lua', lua_libs='redundancy2/lua/shard.lua'")
+test_run:cmd("create server master1 with script='redundancy2/master1.lua'")
 ---
 - true
 ...
-test_run:cmd("create server master2 with script='redundancy2/master2.lua', lua_libs='redundancy2/lua/shard.lua'")
+test_run:cmd("create server master2 with script='redundancy2/master2.lua'")
 ---
 - true
 ...
@@ -83,7 +83,7 @@ box.space.demo:select()
 - - [0, 'test3']
   - [1, 'test4']
 ...
-box.space.operations:select()
+box.space._shard_operations:select()
 ---
 - - ['6', 2, [[512, 'insert', [[0, 'test']]], [512, 'replace', [[0, 'test2']]], [
         512, 'update', [0, [['=', 2, 'test3']]]], [512, 'insert', [[1, 'test4']]],

@@ -1,6 +1,6 @@
 env = require('test_run')
 test_run = env.new()
-test_run:cmd("create server master1 with script='node_down/master1.lua', lua_libs='node_down/lua/shard.lua'")
+test_run:cmd("create server master1 with script='node_down/master1.lua'")
 test_run:cmd("start server master1")
 shard.wait_connection()
 
@@ -18,7 +18,7 @@ batch:q_end()
 
 shard.wait_operations()
 box.space.demo:select()
-box.space.operations:select()
+box.space._shard_operations:select()
 
 test_run:cmd("cleanup server master1")
 test_run:cmd("restart server default with cleanup=1")

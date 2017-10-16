@@ -4,11 +4,11 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("create server master1 with script='redundancy3/master1.lua', lua_libs='redundancy3/lua/shard.lua'")
+test_run:cmd("create server master1 with script='redundancy3/master1.lua'")
 ---
 - true
 ...
-test_run:cmd("create server master2 with script='redundancy3/master2.lua', lua_libs='redundancy3/lua/shard.lua'")
+test_run:cmd("create server master2 with script='redundancy3/master2.lua'")
 ---
 - true
 ...
@@ -107,7 +107,7 @@ test_run:cmd("switch default")
 ---
 - true
 ...
-box.space.operations:select()
+box.space._shard_operations:select()
 ---
 - - ['1', 2, [[512, 'insert', [[10, 'test4']]]]]
   - ['3', 2, [[512, 'insert', [[13, 'test5']]], [512, 'insert', [[16, 'test6']]]]]
