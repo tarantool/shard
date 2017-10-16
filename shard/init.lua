@@ -256,13 +256,12 @@ local function shard(key, use_old)
     if shard == nil then
         return nil
     end
-
     for i = 1, redundancy do
         local srv = shard[redundancy - i + 1]
         -- GH-72
         -- we need to save shards state during maintenance
         -- client will recive error "shard is unavailable"
-        if maintenance[srv.id] ~= nil or pool:server_is_ok(srv) then
+        if not maintenance[srv.id] and pool:server_is_ok(srv) then
             res[k] = srv
             k = k + 1
         end

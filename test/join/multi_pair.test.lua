@@ -44,9 +44,9 @@ status
 
 -- add tuples
 result = shard.demo:insert{12, 'test_pair'}
-result[1].status
+result
 result = shard.demo:insert{19, 'test_pair'}
-result[1].status
+result
 
 -- start servers
 test_run:cmd("start server master1")
