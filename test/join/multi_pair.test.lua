@@ -4,7 +4,7 @@ test_run = env.new()
 test_run:cmd("setopt delimiter ';'")
 -- start shards
 cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua', lua_libs='join/lua/shard.lua'")
+    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
     test_run:cmd("start server master"..id)
 end);
 test_run:cmd("setopt delimiter ''");

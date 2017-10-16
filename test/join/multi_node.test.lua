@@ -4,12 +4,11 @@ test_run = env.new()
 test_run:cmd("setopt delimiter ';'")
 -- start shards
 cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua', lua_libs='join/lua/shard.lua'")
+    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
     test_run:cmd("start server master"..id)
 end);
 test_run:cmd("setopt delimiter ''");
 shard.wait_connection()
-
 
 for i=1, 10 do shard.demo:insert{i, 'test'} end
 
@@ -36,9 +35,9 @@ test_run:cmd("stop server master2")
 for i=11, 20 do shard.demo:insert{i, 'join_test'} end
 
 -- join replica
-test_run:cmd("create server join1 with script='join/join1.lua', lua_libs='join/lua/shard.lua'")
+test_run:cmd("create server join1 with script='join/join1.lua'")
 test_run:cmd("start server join1")
-test_run:cmd("create server join2 with script='join/join2.lua', lua_libs='join/lua/shard.lua'")
+test_run:cmd("create server join2 with script='join/join2.lua'")
 test_run:cmd("start server join2")
 
 status = shard_status()

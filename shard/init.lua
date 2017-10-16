@@ -99,7 +99,15 @@ end
 
 -- helpers
 local function is_connected()
-    return init_complete
+    for j = 1, #shards do
+        local srd = shards[j]
+        for i = 1, redundancy do
+            if not srd[i].conn or not srd[i].conn:is_connected() then
+                return false
+            end
+        end
+    end
+    return true
 end
 
 local function wait_connection()

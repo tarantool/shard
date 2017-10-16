@@ -4,7 +4,7 @@ test_run = env.new()
 test_run:cmd("setopt delimiter ';'")
 -- start shards
 cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua', lua_libs='join/lua/shard.lua'")
+    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
     test_run:cmd("start server master"..id)
 end);
 test_run:cmd("setopt delimiter ''");
@@ -35,7 +35,7 @@ test_run:cmd("stop server master1")
 for i=11, 20 do shard.demo:insert{i, 'join_test'} end
 
 -- join replica
-test_run:cmd("create server join1 with script='join/join1.lua', lua_libs='join/lua/shard.lua'")
+test_run:cmd("create server join1 with script='join/join1.lua'")
 test_run:cmd("start server join1")
 
 status = shard_status()
