@@ -11,7 +11,6 @@ description = {
 }
 dependencies = {
     'lua >= 5.1';
-    'connpool >= 1.1';
 }
 build = {
     type = 'cmake';
