@@ -8,4 +8,4 @@ git submodule update --init --recursive
 sudo pip install -r test-run/requirements.txt
 sudo pip install git+https://github.com/tarantool/tarantool-python.git
 sudo chown $USER:$USER /var/lib/tarantool/
-make test-force
+make test

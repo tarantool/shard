@@ -1,5 +1,3 @@
-#!/usr/bin/env tarantool
-
 local fiber = require('fiber')
 local log = require('log')
 local digest = require('digest')
