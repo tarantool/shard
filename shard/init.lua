@@ -109,11 +109,35 @@ end
 
 local maintenance = {}
 
+local function shard_key_num(key)
+    -- compability cases
+    if type(key) == 'number' and math.floor(key) == key
+    then
+        return key
+    end
+    if type(key) == 'table' and #key == 1 and
+       type(key[1]) == 'number' and math.floor(key[1]) == key[1] then
+        return key[1]
+    end
+    if type(key) ~= 'table' then
+        return digest.crc32(tostring(key))
+    end
+    -- eval key partitions crc32
+    local crc = digest.crc32.new()
+    for i, part in pairs(key) do
+        crc:update(tostring(part))
+    end
+    return crc:result()
+end
+
+local function shard_key(key, shard_count)
+    return 1 + digest.guava(shard_key_num(key), shard_count)
+end
+
 -- main shards search function
 local function shard(key)
-    local num = type(key) == 'number' and key or digest.crc32(key)
     local max_shards = shards_n
-    local shard = shards[1 + digest.guava(num, max_shards)]
+    local shard = shards[shard_key(key, max_shards)]
     local res = {}
     local k = 1
 
@@ -509,33 +533,54 @@ local function next_id(space)
     return next_id
 end
 
+local key_extract = {}
+
+local function extract_key(space_name, data)
+    if key_extract[space_name] then
+        return key_extract[space_name](data)
+    end
+    local parts = {}
+    local pk = box.space[space_name].index[0]
+    for _, part in pairs(pk.parts) do
+        parts[#parts + 1] = part.fieldno
+    end
+    key_extract[space_name] = function(tuple)
+        local key = {}
+        for _, i in pairs(parts) do
+            key[#key + 1] = tuple[i]
+        end
+        return key
+    end
+    return key_extract[space_name](data)
+end
+
 -- default request wrappers for db operations
 local function insert(self, space, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_key(space, data)
     return request(self, space, 'insert', tuple_id, data)
 end
 
 local function auto_increment(self, space, data)
     local id = next_id(space)
     table.insert(data, 1, id)
-    return request(self, space, 'insert', id, data)
+    return request(self, space, 'insert', {id}, data)
 end
 
 local function select(self, space, key, args)
-    return request(self, space, 'select', key[1], key, args)
+    return request(self, space, 'select', key, key, args)
 end
 
 local function replace(self, space, data)
-    local tuple_id = data[1]
+    local tuple_id = extract_key(space, data)
     return request(self, space, 'replace', tuple_id, data)
 end
 
 local function delete(self, space, key)
-    return request(self, space, 'delete', key[1], key)
+    return request(self, space, 'delete', key, key)
 end
 
 local function update(self, space, key, data)
-    return request(self, space, 'update', key[1], key, data)
+    return request(self, space, 'update', key, key, data)
 end
 
 -- function for shard checking after init
