@@ -1,15 +1,12 @@
 env = require('test_run')
 test_run = env.new()
-
-test_run:cmd("setopt delimiter ';'")
--- start shards
-cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
-    test_run:cmd("start server master"..id)
-end);
-test_run:cmd("setopt delimiter ''");
+servers = { 'master0', 'master1', 'master2', 'master3', 'master4', 'master5' }
+test_run:create_cluster(servers, 'join')
+test_run:wait_fullmesh({'master0', 'master3'})
+test_run:wait_fullmesh({'master1', 'master4'})
+test_run:wait_fullmesh({'master2', 'master5'})
+test_run:cmd('switch master0')
 shard.wait_connection()
-
 
 for i=1, 10 do shard.demo:insert{i, 'test'} end
 
@@ -27,7 +24,7 @@ test_run:cmd("switch master2")
 box.space.demo:select()
 test_run:cmd("switch master5")
 box.space.demo:select()
-test_run:cmd("switch default")
+test_run:cmd("switch master0")
 
 -- stop replica
 test_run:cmd("stop server master1")
@@ -43,9 +40,9 @@ result = shard.demo:insert{12, 'test_pair'}
 result
 
 -- start servers
-test_run:cmd("start server master1")
-test_run:cmd("start server master4")
-
+test_run:cmd("start server master1 with wait=False, wait_load=False")
+test_run:cmd("start server master4 with wait=False, wait_load=False")
+test_run:wait_fullmesh({'master1', 'master4'})
 _ = remote_join(status.offline[2].id)
 _ = remote_join(status.offline[1].id)
 shard_status()
@@ -66,12 +63,4 @@ box.space.demo:select()
 test_run:cmd("switch master5")
 box.space.demo:select()
 test_run:cmd("switch default")
--- cleanup
-test_run:cmd("setopt delimiter ';'")
-cluster(function(id)
-    _ = test_run:cmd("stop server master"..id)
-    test_run:cmd("cleanup server master"..id)
-end);
-
-test_run:cmd("setopt delimiter ''");
-test_run:cmd("restart server default with cleanup=1")
+test_run:drop_cluster(servers)

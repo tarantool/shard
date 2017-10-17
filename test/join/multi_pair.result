@@ -4,18 +4,22 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("setopt delimiter ';'")
----
-- true
-...
--- start shards
-cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
-    test_run:cmd("start server master"..id)
-end);
+servers = { 'master0', 'master1', 'master2', 'master3', 'master4', 'master5' }
 ---
 ...
-test_run:cmd("setopt delimiter ''");
+test_run:create_cluster(servers, 'join')
+---
+...
+test_run:wait_fullmesh({'master0', 'master3'})
+---
+...
+test_run:wait_fullmesh({'master1', 'master4'})
+---
+...
+test_run:wait_fullmesh({'master2', 'master5'})
+---
+...
+test_run:cmd('switch master0')
 ---
 - true
 ...
@@ -84,7 +88,7 @@ box.space.demo:select()
   - [9, 'test']
   - [10, 'test']
 ...
-test_run:cmd("switch default")
+test_run:cmd("switch master0")
 ---
 - true
 ...
@@ -163,21 +167,31 @@ result
 - []
 ...
 -- start servers
-test_run:cmd("start server master1")
+test_run:cmd("switch master0")
 ---
 - true
 ...
-test_run:cmd("start server master4")
+test_run:cmd("start server master1 with wait_load=False, wait=False")
 ---
 - true
 ...
-test_run:cmd("start server master2")
+test_run:cmd("start server master4 with wait_load=False, wait=False")
 ---
 - true
 ...
-test_run:cmd("start server master5")
+test_run:cmd("start server master2 with wait_load=False, wait=False")
 ---
 - true
+...
+test_run:cmd("start server master5 with wait_load=False, wait=False")
+---
+- true
+...
+test_run:wait_fullmesh({'master1', 'master4'})
+---
+...
+test_run:wait_fullmesh({'master2', 'master5'})
+---
 ...
 _ = remote_join(status.offline[2].id)
 ---
@@ -284,19 +298,6 @@ test_run:cmd("switch default")
 ---
 - true
 ...
--- cleanup
-test_run:cmd("setopt delimiter ';'")
----
-- true
-...
-cluster(function(id)
-    _ = test_run:cmd("stop server master"..id)
-    test_run:cmd("cleanup server master"..id)
-end);
+test_run:drop_cluster(servers)
 ---
 ...
-test_run:cmd("setopt delimiter ''");
----
-- true
-...
-test_run:cmd("restart server default with cleanup=1")

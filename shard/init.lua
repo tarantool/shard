@@ -78,7 +78,6 @@ local STATE_INPROGRESS = 1
 local STATE_HANDLED = 2
 
 local init_complete = false
-local configuration = {}
 local shard_obj
 
 -- 1.6 and 1.7 netbox compat
@@ -497,9 +496,7 @@ local function request(self, space, operation, tuple_id, ...)
 
     for _, server in ipairs(nodes) do
         table.insert(result, single_call(self, space, server, operation, ...))
-        if configuration.replication == true then
-            break
-        end
+        break
     end
     return result
 end
@@ -728,9 +725,49 @@ local function enable_operations()
     })
 end
 
+local cfg_template = {
+    servers = 'table',
+    login = 'string',
+    password = 'string',
+    monitor = 'boolean',
+    pool_name = 'string',
+    redundancy = 'number',
+    rsd_max_rps = 'number',
+    binary = 'number'
+}
+
+local cfg_default = {
+    servers = {},
+    monitor = true,
+    pool_name = 'sharding_pool',
+    redundancy = 2,
+    rsd_max_rps = 1000,
+}
+
+local function check_cfg(cfg)
+    cfg = table.deepcopy(cfg)
+    -- Set default options.
+    for k,v in pairs(cfg_default) do
+        if cfg[k] == nil then
+            cfg[k] = cfg_default[k]
+        end
+    end
+    -- Check specified options.
+    for k,v in pairs(cfg) do
+        if cfg_template[k] == nil then
+            error("Unknown cfg option "..k)
+        end
+        if cfg_template[k] ~= type(v) then
+            error("Incorrect type of cfg option "..k..": expected "..
+                  cfg_template[k])
+        end
+    end
+    return cfg
+end
+
 -- init shard, connect with servers
 local function init(cfg, callback)
-    configuration = cfg
+    cfg = check_cfg(cfg)
     log.info('Sharding initialization started...')
     -- set constants
     pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT

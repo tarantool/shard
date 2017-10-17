@@ -148,17 +148,14 @@ local function monitor_fiber(self)
                     break
                 end
             end
-            print('dead: %d', dead)
             for k, v in pairs(self.heartbeat_state) do
                 -- kill only if DEAD_TIMEOUT become in all servers
                 if k ~= uri and (v[uri] == nil or v[uri].try < self.DEAD_TIMEOUT) then
-                    log.warn(v[uri].try)
                     log.debug("%s is alive", uri)
                     dead = false
                     break
                 end
             end
-            print('dead: %d', dead)
             if dead then
                 server.conn:close()
                 self.epoch_counter = self.epoch_counter + 1
@@ -200,8 +197,6 @@ end
 
 -- heartbeat table and opinions management
 local function update_heartbeat(self, uri, response, status)
-    log.warn('update heartbeat')
-    log.warn(status)
     -- set or update opinions and timestamp
     if self.self_server == nil then
         return
@@ -233,7 +228,6 @@ local function heartbeat_fiber(self)
             log.debug("checking %s", uri)
 
             if server.conn == nil then
-                log.warn('set -1 to all')
                 for _, opinion in pairs(self.heartbeat_state[server.uri]) do
                     opinion.ts = fiber.time()
                     opinion.try = INFINITY_MIN
@@ -340,7 +334,6 @@ local function connect(self, id, server)
             break
         end
         conn:close()
-        log.warn(" - %s - server check failure", server.uri)
         fiber.sleep(1)
     end
 end

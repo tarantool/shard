@@ -4,23 +4,21 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("create server master1 with script='node_down/master1.lua'")
+servers = { 'master0', 'master1' }
 ---
-- true
 ...
-test_run:cmd("start server master1")
+test_run:create_cluster(servers, 'node_down')
+---
+...
+test_run:wait_fullmesh(servers)
+---
+...
+test_run:cmd('switch master0')
 ---
 - true
 ...
 shard.wait_connection()
 ---
-...
-shard.wait_table_fill()
----
-...
-shard.is_table_filled()
----
-- true
 ...
 -- Kill server and wait for monitoring fibers kill
 _ = test_run:cmd("stop server master1")
@@ -37,4 +35,10 @@ test_run:cmd("cleanup server master1")
 ---
 - true
 ...
-test_run:cmd("restart server default with cleanup=1")
+test_run:cmd("switch default")
+---
+- true
+...
+test_run:drop_cluster({'master0'})
+---
+...

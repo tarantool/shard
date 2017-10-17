@@ -4,18 +4,22 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
-test_run:cmd("setopt delimiter ';'")
----
-- true
-...
--- start shards
-cluster(function(id)
-    test_run:cmd("create server master"..id.." with script='join/master"..id..".lua'")
-    test_run:cmd("start server master"..id)
-end);
+servers = { 'master0', 'master1', 'master2', 'master3', 'master4', 'master5' }
 ---
 ...
-test_run:cmd("setopt delimiter ''");
+test_run:create_cluster(servers, 'join')
+---
+...
+test_run:wait_fullmesh({'master0', 'master3'})
+---
+...
+test_run:wait_fullmesh({'master1', 'master4'})
+---
+...
+test_run:wait_fullmesh({'master2', 'master5'})
+---
+...
+test_run:cmd('switch master0')
 ---
 - true
 ...
@@ -84,7 +88,7 @@ box.space.demo:select()
   - [9, 'test']
   - [10, 'test']
 ...
-test_run:cmd("switch default")
+test_run:cmd("switch master0")
 ---
 - true
 ...
@@ -101,24 +105,21 @@ test_run:cmd("stop server master2")
 for i=11, 20 do shard.demo:insert{i, 'join_test'} end
 ---
 ...
--- join replica
-test_run:cmd("create server join1 with script='join/join1.lua'")
----
-- true
-...
-test_run:cmd("start server join1")
----
-- true
-...
-test_run:cmd("create server join2 with script='join/join2.lua'")
----
-- true
-...
-test_run:cmd("start server join2")
----
-- true
-...
 status = shard_status()
+---
+...
+test_run:cmd("start server master1")
+---
+- true
+...
+test_run:cmd("start server master2")
+---
+- true
+...
+test_run:wait_fullmesh({'master1', 'master4'})
+---
+...
+test_run:wait_fullmesh({'master2', 'master5'})
 ---
 ...
 status
@@ -201,7 +202,7 @@ box.space.demo:select()
   - [12, 'join_test']
   - [17, 'join_test']
 ...
-test_run:cmd("switch join1")
+test_run:cmd("switch master1")
 ---
 - true
 ...
@@ -227,7 +228,7 @@ box.space.demo:select()
   - [18, 'join_test']
   - [19, 'join_test']
 ...
-test_run:cmd("switch join2")
+test_run:cmd("switch master2")
 ---
 - true
 ...
@@ -242,28 +243,15 @@ box.space.demo:select()
   - [18, 'join_test']
   - [19, 'join_test']
 ...
-test_run:cmd("switch default")
+test_run:cmd("switch master0")
 ---
 - true
 ...
 -- cleanup
-test_run:cmd("setopt delimiter ';'")
+test_run:cmd('switch default')
 ---
 - true
 ...
-cluster(function(id)
-    if id ~= '1' and id ~= '2' then
-        _ = test_run:cmd("stop server master"..id)
-    end
-    test_run:cmd("cleanup server master"..id)
-end);
+test_run:drop_cluster(servers)
 ---
 ...
-_ = test_run:cmd("stop server join1")
-test_run:cmd("cleanup server join1")
-_ = test_run:cmd("stop server join2")
-test_run:cmd("cleanup server join2")
-test_run:cmd("setopt delimiter ''");
----
-...
-test_run:cmd("restart server default with cleanup=1")

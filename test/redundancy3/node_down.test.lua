@@ -1,11 +1,10 @@
 env = require('test_run')
 test_run = env.new()
-test_run:cmd("create server master1 with script='redundancy3/master1.lua'")
-test_run:cmd("create server master2 with script='redundancy3/master2.lua'")
-test_run:cmd("start server master1")
-test_run:cmd("start server master2")
+servers = { 'master0', 'master1', 'master2' }
+test_run:create_cluster(servers, 'redundancy3')
+test_run:wait_fullmesh(servers)
+test_run:cmd('switch master0')
 shard.wait_connection()
---shard.wait_epoch(3)
 shard.wait_table_fill()
 shard.is_table_filled()
 
@@ -17,11 +16,10 @@ test_run:cmd("switch master2")
 shard.wait_table_fill()
 shard.is_table_filled()
 
-test_run:cmd("switch default")
+test_run:cmd("switch master0")
 
 -- Kill server and wait for monitoring fibers kill
---# stop server master1
-_ = test_run:cmd("stop server master1")
+test_run:cmd("stop server master1")
 
 -- Check that node is removed from shard
 shard.wait_epoch(2)
@@ -31,8 +29,5 @@ test_run:cmd("switch master2")
 shard.wait_epoch(2)
 shard.is_table_filled()
 
-test_run:cmd("switch default")
-_ = test_run:cmd("stop server master2")
-test_run:cmd("cleanup server master1")
-test_run:cmd("cleanup server master2")
-test_run:cmd("restart server default with cleanup=1")
+test_run:cmd('switch default')
+test_run:drop_cluster({'master0', 'master2'})
