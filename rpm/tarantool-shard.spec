@@ -46,8 +46,8 @@ make test
 %make_install
 
 %files
-%{_libdir}/tarantool/*/
-%{_datarootdir}/tarantool/shard.lua
+%{_libdir}/tarantool/shard/
+%{_datarootdir}/tarantool/shard/
 %doc README.md
 %{!?_licensedir:%global license %doc}
 %license LICENSE
