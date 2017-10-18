@@ -132,27 +132,19 @@ end
 
 local function monitor_fiber(self)
     fiber.name("monitor")
-    local i = 0
     while true do
-        i = i + 1
         local server = self:one(nil, true)
-
         if server ~= nil then
             local uri = server.uri
             local dead = false
             for k, v in pairs(self.heartbeat_state) do
-                -- true only if there is stuff in heartbeat_state
-                if k ~= uri then
-                    dead = true
-                    log.debug("monitoring: %s", uri)
-                    break
-                end
-            end
-            for k, v in pairs(self.heartbeat_state) do
                 -- kill only if DEAD_TIMEOUT become in all servers
-                if k ~= uri and (v[uri] == nil or v[uri].try < self.DEAD_TIMEOUT) then
-                    log.debug("%s is alive", uri)
-                    dead = false
+                if k ~= uri then
+                    log.debug("monitoring: %s", uri)
+                    if v[uri] ~= nil and v[uri].try >= self.DEAD_TIMEOUT then
+                        log.debug("%s is dead", uri)
+                        dead = true
+                    end
                     break
                 end
             end
