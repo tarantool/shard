@@ -19,75 +19,78 @@ shard.wait_connection()
 ...
 shard.demo:insert{1, 'test'}
 ---
-- - [1, 'test']
+- [1, 'test']
 ...
 shard.demo:replace{1, 'test2'}
 ---
-- - [1, 'test2']
+- [1, 'test2']
 ...
 shard.demo:update({1}, {{'=', 2, 'test3'}})
 ---
-- - [1, 'test3']
+- [1, 'test3']
 ...
 shard.demo:insert{2, 'test4'}
 ---
-- - [2, 'test4']
+- [2, 'test4']
 ...
 shard.demo:insert{3, 'test5'}
 ---
-- - [3, 'test5']
+- [3, 'test5']
 ...
 shard.demo:delete({3})
 ---
-- - [3, 'test5']
+- [3, 'test5']
 ...
 shard.multipart:insert{1, 'a', 4}
 ---
-- - [1, 'a', 4]
+- [1, 'a', 4]
 ...
 shard.multipart:insert{1, 'b', 5}
 ---
-- - [1, 'b', 5]
+- [1, 'b', 5]
 ...
 shard.multipart:insert{1, 'c', 6}
 ---
-- - [1, 'c', 6]
+- [1, 'c', 6]
 ...
 shard.multipart:insert{1, 'd', 7}
 ---
-- - [1, 'd', 7]
+- [1, 'd', 7]
 ...
 shard.multipart:insert{2, 'b', 1}
 ---
-- - [2, 'b', 1]
+- [2, 'b', 1]
 ...
 shard.multipart:insert{2, 'a', 2}
 ---
-- - [2, 'a', 2]
+- [2, 'a', 2]
 ...
 shard.multipart:replace{2, 'a', 3}
 ---
-- - [2, 'a', 3]
+- [2, 'a', 3]
 ...
 shard.multipart:replace{1, 'c', 8}
 ---
-- - [1, 'c', 8]
+- [1, 'c', 8]
 ...
 shard.multipart:delete{1, 'd'}
 ---
-- - [1, 'd', 7]
+- [1, 'd', 7]
 ...
 shard.multipart:update({1, 'c'}, {{'+', 3, 1}})
 ---
-- - [1, 'c', 9]
+- [1, 'c', 9]
 ...
 box.space.demo:select()
 ---
-- []
+- - [1, 'test3']
+  - [2, 'test4']
 ...
 box.space.multipart:select()
 ---
-- []
+- - [1, 'a', 4]
+  - [1, 'c', 9]
+  - [2, 'b', 1]
 ...
 test_run:cmd("switch master1")
 ---
@@ -108,14 +111,27 @@ test_run:cmd("switch master2")
 ...
 box.space.demo:select()
 ---
-- - [1, 'test3']
-  - [2, 'test4']
+- []
 ...
 box.space.multipart:select()
 ---
-- - [1, 'a', 4]
-  - [1, 'c', 9]
-  - [2, 'b', 1]
+- []
+...
+--
+-- Test shard call. It calls a function on a shard by a given
+-- key.
+--
+shard.call(1, 'shard_call', {'argument1', 'argument2'}, {})
+---
+- shard call on instance 0
+- argument1
+- argument2
+...
+shard.call(4, 'shard_call', {'argument1', 'argument2'}, {})
+---
+- shard call on instance 1
+- argument1
+- argument2
 ...
 test_run:cmd('switch default')
 ---

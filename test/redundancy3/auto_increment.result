@@ -22,21 +22,21 @@ shard.wait_connection()
 ...
 shard.demo:auto_increment{'test'}
 ---
-- - [1, 'test']
+- [1, 'test']
 ...
 shard.demo:auto_increment{'test2'}
 ---
-- - [4, 'test2']
+- [2, 'test2']
 ...
 shard.demo:auto_increment{'test3'}
 ---
-- - [7, 'test3']
+- [3, 'test3']
 ...
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [4, 'test2']
-  - [7, 'test3']
+  - [2, 'test2']
+  - [3, 'test3']
 ...
 test_run:cmd("switch master1")
 ---
@@ -45,8 +45,8 @@ test_run:cmd("switch master1")
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [4, 'test2']
-  - [7, 'test3']
+  - [2, 'test2']
+  - [3, 'test3']
 ...
 test_run:cmd("switch master2")
 ---
@@ -55,8 +55,8 @@ test_run:cmd("switch master2")
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [4, 'test2']
-  - [7, 'test3']
+  - [2, 'test2']
+  - [3, 'test3']
 ...
 test_run:cmd('switch default')
 ---

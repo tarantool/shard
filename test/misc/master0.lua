@@ -7,11 +7,11 @@ util = require('util')
 local cfg = {
     servers = {
         { uri = util.instance_uri(0), replica_set = '0' },
-        { uri = util.instance_uri(1), replica_set = '0' },
+        { uri = util.instance_uri(1), replica_set = '1' },
     },
     login = 'tester',
     password = 'pass',
-    redundancy = 2,
+    redundancy = 10,
     binary = util.instance_port(util.INSTANCE_ID),
 }
 
@@ -22,14 +22,8 @@ box.cfg {
     replication = {util.instance_uri(0), util.instance_uri(1)},
 }
 util.create_replica_user(cfg)
-
-if util.INSTANCE_ID == 0 then
-    local demo = box.schema.create_space('demo')
-    demo:create_index('primary', {type = 'tree', parts = {1, 'unsigned'}})
-else
-    while box.space.demo == nil or box.space.demo.index[0] == nil do
-        fiber.sleep(0.01)
-    end
-end
-
-fiber.create(function() shard.init(cfg) end)
+shard_init_status = nil
+shard_init_err = nil
+fiber.create(function()
+    shard_init_status, shard_init_err = pcall(shard.init, cfg)
+end)

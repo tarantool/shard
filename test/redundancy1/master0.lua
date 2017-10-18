@@ -6,9 +6,9 @@ util = require('util')
 
 local cfg = {
     servers = {
-        { uri = util.instance_uri(0), zone = '0' },
-        { uri = util.instance_uri(1), zone = '1' },
-        { uri = util.instance_uri(2), zone = '2' },
+        { uri = util.instance_uri(0), replica_set = '0' },
+        { uri = util.instance_uri(1), replica_set = '1' },
+        { uri = util.instance_uri(2), replica_set = '2' },
     },
     login = 'tester',
     password = 'pass',
@@ -17,6 +17,10 @@ local cfg = {
 }
 
 require('console').listen(os.getenv('ADMIN'))
+
+function shard_call(arg1, arg2)
+    return 'shard call on instance '..util.INSTANCE_ID, arg1, arg2
+end
 
 box.cfg{ listen = cfg.binary }
 util.create_replica_user(cfg)

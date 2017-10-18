@@ -131,10 +131,10 @@ status
   - uri: localhost:33132
     id: 3
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33134
     id: 5
   - uri: localhost:33135
@@ -151,10 +151,10 @@ shard_status()
 - maintenance: []
   offline: []
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33131
     id: 2
   - uri: localhost:33134

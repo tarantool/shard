@@ -134,16 +134,16 @@ status
   - uri: localhost:33131
     id: 2
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33134
     id: 5
-  - uri: localhost:33135
-    id: 6
   - uri: localhost:33132
     id: 3
+  - uri: localhost:33135
+    id: 6
 ...
 test_run:cmd("start server master1")
 ---
@@ -162,10 +162,10 @@ shard_status()
   - uri: localhost:33132
     id: 3
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33131
     id: 2
   - uri: localhost:33134
@@ -252,10 +252,10 @@ status
   - uri: localhost:33132
     id: 3
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33131
     id: 2
   - uri: localhost:33134
@@ -278,10 +278,10 @@ shard_status()
 - maintenance: []
   offline: []
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33131
     id: 2
   - uri: localhost:33134

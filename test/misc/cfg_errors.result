@@ -1,0 +1,69 @@
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+test_run:cmd("push filter '.*/init.lua.*:[0-9]+: ' to 'init.lua:<line>: '")
+---
+- true
+...
+-- Try bad redundancy.
+servers = { 'master0', 'master1' }
+---
+...
+test_run:create_cluster(servers, 'misc')
+---
+...
+test_run:wait_fullmesh(servers)
+---
+...
+test_run:cmd('switch master0')
+---
+- true
+...
+shard_init_status
+---
+- false
+...
+shard_init_err
+---
+init.lua:<line>: Minimal redundancy found
+  1, but specified 10'
+...
+test_run:cmd('switch master1')
+---
+- true
+...
+shard_init_status
+---
+- false
+...
+shard_init_err
+---
+init.lua:<line>: Minimal redundancy found
+  1, but specified 10'
+...
+-- Try bad config.
+test_run:cmd('switch default')
+---
+- true
+...
+cfg = {login = 'kek', password = 'kek', binary = 12345, servers = { {unknown = 100} }}
+---
+...
+shard = require('shard')
+---
+...
+shard.init(cfg)
+---
+init.lua:<line>: Unknown cfg option
+    unknown'
+...
+test_run:cmd('clear filter')
+---
+- true
+...
+test_run:drop_cluster(servers)
+---
+...

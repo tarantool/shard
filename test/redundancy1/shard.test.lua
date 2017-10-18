@@ -6,10 +6,10 @@ test_run:cmd('switch master0')
 shard.wait_connection()
 
 -- num keys
-#shard.shard(0)
+shard.server_by_key(0).uri
 
 -- str keys
-#shard.shard('abc')
+shard.server_by_key('abc').uri
 
 test_run:cmd('switch default')
 test_run:drop_cluster(servers)

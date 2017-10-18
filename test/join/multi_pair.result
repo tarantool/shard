@@ -137,19 +137,19 @@ status
   - true
   - true
   offline:
-  - uri: localhost:33134
-    id: 5
   - uri: localhost:33131
     id: 2
-  - uri: localhost:33135
-    id: 6
+  - uri: localhost:33134
+    id: 5
   - uri: localhost:33132
     id: 3
+  - uri: localhost:33135
+    id: 6
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
+  - uri: localhost:33133
+    id: 4
 ...
 -- add tuples
 result = shard.demo:insert{12, 'test_pair'}
@@ -157,14 +157,14 @@ result = shard.demo:insert{12, 'test_pair'}
 ...
 result
 ---
-- []
+- null
 ...
 result = shard.demo:insert{19, 'test_pair'}
 ---
 ...
 result
 ---
-- []
+- null
 ...
 -- start servers
 test_run:cmd("switch master0")
@@ -210,26 +210,26 @@ shard_status()
 - maintenance: []
   offline: []
   online:
-  - uri: localhost:33133
-    id: 4
   - uri: localhost:33130
     id: 1
-  - uri: localhost:33134
-    id: 5
+  - uri: localhost:33133
+    id: 4
   - uri: localhost:33131
     id: 2
-  - uri: localhost:33135
-    id: 6
+  - uri: localhost:33134
+    id: 5
   - uri: localhost:33132
     id: 3
+  - uri: localhost:33135
+    id: 6
 ...
 shard.demo:insert{12, 'test_pair'}
 ---
-- - [12, 'test_pair']
+- [12, 'test_pair']
 ...
 shard.demo:insert{19, 'test_pair'}
 ---
-- - [19, 'test_pair']
+- [19, 'test_pair']
 ...
 -- check joined replica
 box.space.demo:select()

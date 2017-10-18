@@ -33,5 +33,12 @@ test_run:cmd("switch master2")
 box.space.demo:select()
 box.space.multipart:select()
 
+--
+-- Test shard call. It calls a function on a shard by a given
+-- key.
+--
+shard.call(1, 'shard_call', {'argument1', 'argument2'}, {})
+shard.call(4, 'shard_call', {'argument1', 'argument2'}, {})
+
 test_run:cmd('switch default')
 test_run:drop_cluster(servers)

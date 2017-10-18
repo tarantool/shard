@@ -21,14 +21,14 @@ shard.wait_connection()
 ---
 ...
 -- num keys
-#shard.shard(0)
+shard.server_by_key(0).uri
 ---
-- 3
+- localhost:33130
 ...
 -- str keys
-#shard.shard('abc')
+shard.server_by_key('abc').uri
 ---
-- 3
+- localhost:33130
 ...
 test_run:cmd('switch default')
 ---

@@ -6,12 +6,12 @@ util = require('util')
 
 local cfg = {
     servers = {
-        { uri = util.instance_uri(0), zone = '0' },
-        { uri = util.instance_uri(1), zone = '0' },
-        { uri = util.instance_uri(2), zone = '0' },
-        { uri = util.instance_uri(3), zone = '1' },
-        { uri = util.instance_uri(4), zone = '1' },
-        { uri = util.instance_uri(5), zone = '1' },
+        { uri = util.instance_uri(0), replica_set = '0' },
+        { uri = util.instance_uri(1), replica_set = '1' },
+        { uri = util.instance_uri(2), replica_set = '2' },
+        { uri = util.instance_uri(3), replica_set = '0' },
+        { uri = util.instance_uri(4), replica_set = '1' },
+        { uri = util.instance_uri(5), replica_set = '2' },
     },
     login = 'tester',
     password = 'pass',

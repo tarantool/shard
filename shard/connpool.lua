@@ -36,10 +36,6 @@ local function on_disconnect_one(self, srv)
     log.info("kill %s by dead timeout", srv.uri)
 end
 
-local function on_disconnect_zone(self, name)
-    log.info("zone %s has no active connections", name)
-end
-
 local function on_disconnect(self)
     log.info("there is no active connections")
 end
@@ -49,8 +45,8 @@ local function on_init(self)
 end
 
 
-local function server_is_ok(self, srv, dead)
-    if srv.ignore then
+local function server_is_ok(self, server, dead)
+    if server.ignore then
         return false
     end
 
@@ -58,82 +54,42 @@ local function server_is_ok(self, srv, dead)
         return true
     end
 
-    if srv.conn == nil then
+    if server.conn == nil then
         return false
     end
 
-    return srv.conn:is_connected()
+    return server.conn:is_connected()
 end
 
-local function merge_zones(self)
-    local all_zones = {}
-    local i = 1
-    for _, zone in pairs(self.servers) do
-        for _, server in pairs(zone.list) do
-            all_zones[i] = server
-            i = i + 1
-        end
-    end
-    return all_zones
-end
-
-local function all(self, zone_id, include_dead)
+local function all(self, include_dead)
     local res = {}
-    local k = 1
-    local zone
-
-    if zone_id ~= nil then
-        zone = self.servers[zone_id]
-    else
-        zone = { list=self:merge_zones() }
-    end
-
-    for _, srv in pairs(zone.list) do
-        if self:server_is_ok(srv, include_dead) then
-            res[k] = srv
-            k = k + 1
+    for _, server in pairs(self.servers) do
+        if self:server_is_ok(server, include_dead) then
+            table.insert(res, server)
         end
     end
     return res
 end
 
-local function one(self, zone_id, include_dead)
-    local active_list = self:all(zone_id, include_dead)
+local function one(self, include_dead)
+    local active_list = self:all(include_dead)
     return active_list[math.random(#active_list)]
 end
 
-local function zone_list(self)
-    local names = {}
-    local i = 1
-    for z_name, _ in pairs(self.servers) do
-        names[i] = z_name
-        i = i + 1
-    end
-    return names
-end
-
-local function _on_disconnect(self, srv)
-    self:on_disconnect_one(srv)
-
-    -- check zone and pool
-    local d = 0
-    local all_zones = self:zone_list()
-    for _, name in pairs(all_zones) do
-        local alive = self:all(name)
-        if #alive == 0 then
-            self:on_disconnect_zone(name)
-            d = d + 1
+local function _on_disconnect(self, server)
+    self:on_disconnect_one(server)
+    for _, server in pairs(self.servers) do
+        if self:server_is_ok(server, false) then
+            return
         end
     end
-    if d == #all_zones then
-        self:on_disconnect()
-    end
+    self:on_disconnect()
 end
 
 local function monitor_fiber(self)
     fiber.name("monitor")
     while true do
-        local server = self:one(nil, true)
+        local server = self:one(true)
         if server ~= nil then
             local uri = server.uri
             local dead = false
@@ -160,15 +116,12 @@ end
 
 -- merge node response data with local table by fiber time
 local function merge_tables(self, response)
-    if response == nil then
-        return
-    end
     for seen_by_uri, node_data in pairs(self.heartbeat_state) do
         local node_table = response[seen_by_uri]
         if node_table ~= nil then
             for uri, data in pairs(node_table) do
                 if data.ts > node_data[uri].ts then
-                    log.debug('merged heartbeat from ' .. seen_by_uri .. ' with ' .. uri)
+                    log.debug('merged heartbeat from '..seen_by_uri..' with '..uri)
                     node_data[uri] = data
                 end
             end
@@ -177,12 +130,10 @@ local function merge_tables(self, response)
 end
 
 local function monitor_fail(self, uri)
-    for _, zone in pairs(self.servers) do
-        for _, server in pairs(zone.list) do
-            if server.uri == uri then
-                self:on_connfail(server)
-                break
-            end
+    for _, server in pairs(self.servers) do
+        if server.uri == uri then
+            self:on_connfail(server)
+            break
         end
     end
 end
@@ -203,17 +154,17 @@ local function update_heartbeat(self, uri, response, status)
     end
     opinion[uri].ts = fiber.time()
     -- update local heartbeat table
-    self:merge_tables(response)
+    if response ~= nil then
+        self:merge_tables(response)
+    end
 end
 
 -- heartbeat worker
 local function heartbeat_fiber(self)
     fiber.name("heartbeat")
-    local i = 0
     while true do
-        i = i + 1
         -- random select node to check
-        local server = self:one(nil, true)
+        local server = self:one(true)
 
         if server ~= nil then
             local uri = server.uri
@@ -246,27 +197,16 @@ local function heartbeat_fiber(self)
     end
 end
 
--- function to check a connection after it's established
-local function check_connection(self, conn)
-    return true
-end
-
 local function is_table_filled(self)
-    local result = true
-    for _, server in pairs(self.configuration.servers) do
-        if self.heartbeat_state[server.uri] == nil then
-            result = false
-            break
-        end
-        for _, lserver in pairs(self.configuration.servers) do
+    for _, server in pairs(self.servers) do
+        for _, lserver in pairs(self.servers) do
             local srv = self.heartbeat_state[server.uri][lserver.uri]
             if srv == nil then
-                result = false
-                break
+                return false
             end
         end
     end
-    return result
+    return true
 end
 
 local function wait_table_fill(self)
@@ -277,9 +217,9 @@ end
 
 local function fill_table(self)
     -- fill monitor table with start values
-    for _, server in pairs(self.configuration.servers) do
+    for _, server in pairs(self.servers) do
         self.heartbeat_state[server.uri] = {}
-        for _, lserver in pairs(self.configuration.servers) do
+        for _, lserver in pairs(self.servers) do
             self.heartbeat_state[server.uri][lserver.uri] = {
                 try = 0,
                 ts  = INFINITY_MIN,
@@ -293,16 +233,9 @@ local function get_heartbeat(self)
     return self.heartbeat_state
 end
 
-local function enable_operations(self)
-    -- set helpers
-    self.get_heartbeat = self.get_heartbeat
-end
-
 local function connect(self, id, server)
-    local zone = self.servers[server.zone]
     log.info(' - %s - connecting...', server.uri)
     while true do
-        local arbiter = server.arbiter or false
         local login = server.login
         local pass = server.password
         if login == nil or pass == nil then
@@ -311,14 +244,19 @@ local function connect(self, id, server)
         end
         local uri = string.format("%s:%s@%s", login, pass, server.uri)
         local conn = remote:new(uri, { reconnect_after = self.RECONNECT_AFTER })
-        if conn:ping() and self:check_connection(conn) then
+        if conn:ping() then
             local srv = {
                 uri = server.uri, conn = conn,
                 login = login, password=pass,
-                id = id, arbiter = arbiter
+                id = id
             }
-            zone.n = zone.n + 1
-            zone.list[zone.n] = srv
+            -- Merge user options into server attributes.
+            for k, v in pairs(server) do
+                if srv[k] == nil then
+                    srv[k] = v
+                end
+            end
+            table.insert(self.servers, srv)
             self:on_connected_one(srv)
             if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
                 self.self_server = srv
@@ -332,31 +270,28 @@ end
 
 local function connection_fiber(self)
     while true do
-        for _, zone in pairs(self.servers) do
-            for _, server in pairs(zone.list) do
+        for _, server in pairs(self.servers) do
+            if server.conn == nil or not server.conn:is_connected() then
+                local uri = ""
 
-                if server.conn == nil or not server.conn:is_connected() then
-                    local uri = ""
+                if server.password == "" then
+                    uri = string.format("%s@%s", server.login, server.uri)
+                else
+                    uri = string.format("%s:%s@%s", server.login, server.password, server.uri)
+                end
 
-                    if server.password == "" then
-                        uri = string.format("%s@%s", server.login, server.uri)
-                    else
-                        uri = string.format("%s:%s@%s", server.login, server.password, server.uri)
+                local conn = remote:new(uri, { reconnect_after = self.RECONNECT_AFTER })
+                if conn:ping() then
+                    server.conn = conn
+                    server.conn_error = ""
+                    log.debug("connected to: " .. server.uri)
+
+                    if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
+                        log.info("setting self_server to " .. server.uri)
+                        self.self_server = server
                     end
-
-                    local conn = remote:new(uri, { reconnect_after = self.RECONNECT_AFTER })
-                    if conn:ping() and self:check_connection(conn) then
-                        server.conn = conn
-                        server.conn_error = ""
-                        log.debug("connected to: " .. server.uri)
-
-                        if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
-                            log.info("setting self_server to " .. server.uri)
-                            self.self_server = server
-                        end
-                    else
-                        server.conn_error = conn.error
-                    end
+                else
+                    server.conn_error = conn.error
                 end
             end
         end
@@ -372,23 +307,9 @@ local function init(self, cfg)
         self.configuration.pool_name = 'default'
     end
     log.info('establishing connection to cluster servers...')
-    self.servers_n = 0
-    self.zones_n = 0
     for id, server in pairs(cfg.servers) do
-        self.servers_n = self.servers_n + 1
-        local zone_name = server.zone
-        if zone_name == nil then
-            zone_name = 'default'
-        end
-        if self.servers[zone_name] == nil then
-            self.zones_n = self.zones_n + 1
-            self.servers[zone_name] = { id = self.zones_n, n = 0, list = {} }
-        end
-        local zone = self.servers[server.zone]
-
         local login = server.login
         local pass = server.password
-        local arbiter = server.arbiter or false
 
         if login == nil or pass == nil then
             login = self.configuration.login
@@ -398,10 +319,15 @@ local function init(self, cfg)
         local srv = {
             uri = server.uri, conn = nil,
             login = login, password=pass,
-            id = id, arbiter = arbiter
+            id = id
         }
-        zone.n = zone.n + 1
-        zone.list[zone.n] = srv
+        -- Merge user options into server attributes.
+        for k, v in pairs(server) do
+            if srv[k] == nil then
+                srv[k] = v
+            end
+        end
+        table.insert(self.servers, srv)
     end
 
     self:on_connected()
@@ -414,14 +340,9 @@ local function init(self, cfg)
     end
     fiber.create(self.connection_fiber, self)
 
-    self:enable_operations()
     self.init_complete = true
     self:on_init()
     return true
-end
-
-local function len(self)
-    return self.servers_n
 end
 
 local function is_connected(self)
@@ -446,16 +367,12 @@ end
 
 local pool_object_methods = {
     server_is_ok = server_is_ok,
-    merge_zones = merge_zones,
     merge_tables = merge_tables,
     monitor_fail = monitor_fail,
     update_heartbeat = update_heartbeat,
     connect = connect,
     fill_table = fill_table,
-    enable_operations = enable_operations,
-    check_connection = check_connection,
 
-    len = len,
     is_connected = is_connected,
     wait_connection = wait_connection,
     get_epoch = get_epoch,
@@ -467,15 +384,12 @@ local pool_object_methods = {
     init = init,
     one = one,
     all = all,
-    zone_list = zone_list,
     get_heartbeat = get_heartbeat,
 }
 
 local function new()
     return setmetatable({
         servers = {},
-        servers_n = 0,
-        zones_n = 0,
         self_server = nil,
         heartbeat_state = {},
         init_complete = false,
@@ -497,7 +411,6 @@ local function new()
         on_connected_one = on_connected_one,
         on_disconnect = on_disconnect,
         on_disconnect_one = on_disconnect_one,
-        on_disconnect_zone = on_disconnect_zone,
         on_init = on_init,
         on_connfail = on_connfail,
     }, {

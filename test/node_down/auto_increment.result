@@ -22,15 +22,15 @@ shard.wait_connection()
 ...
 shard.demo:auto_increment{'test'}
 ---
-- - [1, 'test']
+- [1, 'test']
 ...
 shard.demo:auto_increment{'test2'}
 ---
-- - [3, 'test2']
+- [2, 'test2']
 ...
 shard.demo:auto_increment{'test3'}
 ---
-- - [5, 'test3']
+- [3, 'test3']
 ...
 _ = test_run:cmd("stop server master1")
 ---
@@ -38,8 +38,8 @@ _ = test_run:cmd("stop server master1")
 box.space.demo:select()
 ---
 - - [1, 'test']
-  - [3, 'test2']
-  - [5, 'test3']
+  - [2, 'test2']
+  - [3, 'test3']
 ...
 test_run:cmd('switch default')
 ---
