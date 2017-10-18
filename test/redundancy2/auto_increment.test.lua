@@ -16,7 +16,6 @@ box.space.demo:select()
 test_run:cmd("switch master2")
 box.space.demo:select()
 
-box.space._shard_operations:select()
 test_run:cmd("switch default")
 
 _ = test_run:cmd("stop server master1")

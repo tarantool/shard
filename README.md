@@ -265,7 +265,7 @@ Returns: `true` on success
 Put the node identified by `id` to maintenance mode. It will not
 receive writes, and will not be returned by the `shard()` function.
 
-### Single phase operations
+### Operations
 
 #### `shard.space.insert(tuple)`
 
@@ -317,97 +317,3 @@ Shard key is determined from the space schema, unlike the `insert()` operation.
 Returns: table with results of individual `auto_increment()` calls on
 each redundant node. Return value of each `auto_increment()` is the
 same as in the `insert()` call.
-
-
-### Two-phase operations
-
-Two phase operations work, well, in two phases. The first phase pushes
-the operation into an auxiliary space "operations" on all the involved
-shards, according to the redundancy factor. As soon as the operation
-is propagated to the shards, a separate call triggers execution of the
-operation on all shards. If the caller dies before invoking the second
-phase, the shards figure out by themselves that the operation has been
-propagated and execute it anyway (it only takes a while, since the
-check is done only once in a period of time).  The operation id is
-necessary to avoid double execution of the same operation (at most
-once execution semantics) and most be provided by the user. The status
-of the operation can always be checked, given its operation id, and
-provided that it has not been pruned from operations space.
-
-#### `shard.space.q_insert(operation_id, tuple)`
-
-Inserts `tuple` to the shard space.
-
-* `operation_id` is a unique operation identifier (see "Tho-phase operations")
-* `tuple[1]` is treated as shard key.
-
-Returns: `tuple`
-
-#### `shard.space.q_replace(operation_id, tuple)`
-
-Replaces `tuple` across the shard space.
-
-* `operation_id` is a unique operation identifier (see "Tho-phase operations")
-* `tuple[1]` is treated as shard key.
-
-Returns: `tuple`
-
-#### `shard.space.q_delete(operation_id, key)`
-
-Deletes tuples with primary key `key` across the shard space.
-
-* `operation_id` is a unique operation identifier (see "Tho-phase operations")
-* `key` is treated as a shard key.
-
-Returns: nothing
-
-#### `shard.space.q_update(operation_id, key, {{operator, field_no, value}, ...})`
-
-Update `tuple` across the shard space. Behaves the same way as Tarantool's [update()](http://tarantool.org/doc/book/box/box_space.html?highlight=insert#lua-function.space_object.update).
-
-* `operation_id` is a unique operation identifier (see "Tho-phase operations")
-* `key` is treated as shard key.
-
-Returns: nothing
-
-#### `shard.space.q_auto_increment(tuple)`
-
-Inserts `tuple` to the shard space, automatically incrementing its primary key.
-
-* `operation_id` is a unique operation identifier (see "Tho-phase operations")
-
-If primary key is numeric, `auto_increment()` will use the next integer number.
-If primary key is string, `auto_increment()` will generate a new UUID.
-
-Shard key is determined from the space schema, unlike the `insert()` operation.
-
-Returns: `tuple`
-
-#### `shard.check_operation(operation_id, tuple_id)`
-
-Function checks the operation status on all nodes. If the operation
-hasn't finished yet - waits for its completion for up to 5 seconds.
-
-* `operation_id` - unique operation identifier
-* `tuple_id` - tuple primary key
-
-Returns: `true`, if the operation has completed, `false` otherwise.
-
-#### `shard.q_begin()|batch_obj.q_end()`
-
-`q_begin()` returns an object that wraps multiple sequential two-phase
-operations into one batch. You can use it the same way you use the
-shard object:
-
-```lua
-batch_obj = shard.q_begin()
-batch_obj.demo:q_insert(1, {0, 'test'})
-batch_obj.demo:q_replace(2, {0, 'test2'})
-batch_obj:q_end()
-```
-
-When you call `q_end()`, the batch will be executed in one shot.
-
-#### `wait_operations()`
-
-If there are pending two-phase operations, wait until they complete.

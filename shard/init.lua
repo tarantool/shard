@@ -556,94 +556,6 @@ local function wait_table_fill()
     return pool:wait_table_fill()
 end
 
-local function shard_init_v01()
-    if box.space.operations == nil then
-        local operations = box.schema.create_space('operations')
-        operations:create_index('primary', {
-            type  = 'hash',
-            parts = { 1, 'str' }
-        })
-        operations:create_index('queue', {
-            type  = 'tree',
-            parts = { 2, 'num', 1, 'str' }
-        })
-    end
-    if box.space.cluster_manager == nil then
-        local cluster_ops = box.schema.create_space('cluster_manager')
-        cluster_ops:create_index('primary', {
-            type  = 'tree',
-            parts = { 1, 'num' }
-        })
-        cluster_ops:create_index('status', {
-            type   = 'tree',
-            parts  = { 2, 'num' },
-            unique = false
-        })
-    end
-    if box.space.sh_worker == nil then
-        local sh_space = box.schema.create_space('sh_worker')
-        sh_space:create_index('primary', {
-            type  = 'tree',
-            parts = { 1, 'num' }
-        })
-        sh_space:create_index('status', {
-            type   = 'tree',
-            parts  = { 2, 'num' },
-            unique = false
-        })
-    end
-    if box.space.sh_worker_vinyl == nil then
-        local sh_space = box.schema.create_space('sh_worker_vinyl', {
-            engine = 'vinyl'
-        })
-        sh_space:create_index('primary', {
-            type  = 'tree',
-            parts = { 1, 'num' }
-        })
-        sh_space:create_index('status', {
-            type   = 'tree',
-            parts  = {2, 'num'},
-            unique = false
-        })
-    end
-    -- sharding manager settings
-    if box.space.sharding == nil then
-        local sharding = box.schema.create_space('sharding')
-        sharding:create_index('primary', {
-            type  = 'tree',
-            parts = { 1, 'str' }
-        })
-    end
-end
-
-local function shard_init_v02()
-    box.space.cluster_manager:drop()
-end
-
-local function shard_init_v03()
-    -- renaming memtx spaces
-    box.space.sharding:rename('_shard')
-    box.space.sh_worker:rename('_shard_worker')
-    box.space.operations:rename('_shard_operations')
-
-    -- it's better to create new vinyl space, move everything to it and
-    -- drop the old space
-    local new_sh_space = box.schema.create_space('_shard_worker_vinyl', { engine = 'vinyl' })
-    new_sh_space:create_index('primary', { type  = 'tree', parts = { 1, 'num' } })
-    new_sh_space:create_index('status', { type = 'tree', parts = {2, 'num'}, unique = false })
-    for record in box.space.sh_worker_vinyl:pairs() do
-        new_sh_space:replace(record)
-    end
-    box.space.sh_worker_vinyl:drop()
-end
-
-local function init_create_spaces(cfg)
-    box.once('shard_init_v01', shard_init_v01)
-    box.once('shard_init_v02', shard_init_v02)
-    box.once('shard_init_v03', shard_init_v03)
-    configuration = cfg
-end
-
 local function shard_mapping(zones)
     -- iterate over all zones, and build shards, aka replica set
     -- each replica set has 'redundancy' servers from different
@@ -773,7 +685,7 @@ end
 
 -- init shard, connect with servers
 local function init(cfg, callback)
-    init_create_spaces(cfg)
+    configuration = cfg
     log.info('Sharding initialization started...')
     -- set constants
     pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
@@ -803,17 +715,6 @@ end
 
 local function len(self)
     return self.shards_n
-end
-
-local function has_unfinished_operations()
-    local tuple = box.space._shard_operations.index.queue:min()
-    return tuple ~= nil and tuple[2] ~= STATE_HANDLED
-end
-
-local function wait_operations()
-    while has_unfinished_operations() do
-        fiber.sleep(0.01)
-    end
 end
 
 local function get_epoch()
@@ -847,7 +748,6 @@ shard_obj = {
     redundancy = redundancy,
     is_connected = is_connected,
     wait_connection = wait_connection,
-    wait_operations = wait_operations,
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
     is_table_filled = is_table_filled,

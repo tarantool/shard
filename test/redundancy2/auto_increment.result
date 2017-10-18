@@ -62,10 +62,6 @@ box.space.demo:select()
   - [4, 'test2']
   - [7, 'test3']
 ...
-box.space._shard_operations:select()
----
-- []
-...
 test_run:cmd("switch default")
 ---
 - true
