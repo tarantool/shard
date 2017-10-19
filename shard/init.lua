@@ -7,6 +7,7 @@ local lib_pool = require('shard.connpool')
 local ffi = require('ffi')
 local buffer = require('buffer')
 local mpffi = require'msgpackffi'
+local config_util = require('shard.config_util')
 
 -- tuple array merge driver
 local driver = require('shard.driver')
@@ -613,66 +614,9 @@ local function enable_operations()
     })
 end
 
-local function check_cfg(template, default, cfg)
-    cfg = table.deepcopy(cfg)
-    -- Set default options.
-    for k, v in pairs(default) do
-        if cfg[k] == nil then
-            cfg[k] = default[k]
-        end
-    end
-    -- Check specified options.
-    for k, value in pairs(cfg) do
-        if template[k] == nil then
-            error("Unknown cfg option "..k)
-        end
-        if type(template[k]) == 'function' then
-            template[k](value)
-        elseif template[k] ~= type(value) then
-            error("Incorrect type of cfg option "..k..": expected "..
-                  template[k])
-        end
-    end
-    return cfg
-end
-
-local cfg_server_template = {
-    uri = 'string',
-    replica_set = 'string',
-}
-
-local cfg_template = {
-    servers = function(value)
-        if type(value) ~= 'table' then
-            error('Option "servers" must be table')
-        end
-        for _, server in ipairs(value) do
-            if type(server) ~= 'table' then
-                error('Each server must be table')
-            end
-            check_cfg(cfg_server_template, {}, server)
-        end
-    end,
-    login = 'string',
-    password = 'string',
-    monitor = 'boolean',
-    pool_name = 'string',
-    redundancy = 'number',
-    rsd_max_rps = 'number',
-    binary = 'number'
-}
-
-local cfg_default = {
-    servers = {},
-    monitor = true,
-    pool_name = 'sharding_pool',
-    redundancy = 2,
-    rsd_max_rps = 1000,
-}
-
 -- init shard, connect with servers
 local function init(cfg, callback)
-    cfg = check_cfg(cfg_template, cfg_default, cfg)
+    cfg = config_util.check_cfg(cfg)
     log.info('Sharding initialization started...')
     -- set constants
     pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
@@ -697,6 +641,9 @@ local function init(cfg, callback)
     end
     redundancy = min_redundancy
     log.info("redundancy = %d", redundancy)
+
+    wait_connection()
+    config_util.check_schema(replica_sets)
 
     -- servers mappng
 
