@@ -3,7 +3,6 @@ local log = require('log')
 local digest = require('digest')
 local remote = require('net.box')
 local uuid = require('uuid')
-local lib_pool = require('shard.connpool')
 local ffi = require('ffi')
 local buffer = require('buffer')
 local mpffi = require'msgpackffi'
@@ -24,6 +23,10 @@ local field_types = {
     array     = 7,
     map       = 8,
 }
+
+local epoch_counter = 1
+local self_server = nil
+local request_timeout = nil
 
 local merger = {}
 local function merge_new(key_parts)
@@ -62,24 +65,12 @@ local function key_create(data)
     return mpffi.encode(data)
 end
 
-local redundancy = 3
 local replica_sets = {}
 local replica_sets_n = 0
 
-local REMOTE_TIMEOUT = 210
-local HEARTBEAT_TIMEOUT = 500
-local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = nil
 
-local pool = lib_pool.new()
 local shard_obj
-
--- 1.6 and 1.7 netbox compat
-local compat = string.sub(require('tarantool').version, 1,3)
-local nb_call = 'call'
-if compat ~= '1.6' then
-    nb_call = 'call_16'
-end
 
 -- helpers
 local function is_connected()
@@ -132,7 +123,8 @@ local function server_by_key(key)
         return nil
     end
     for _, server in ipairs(replica_set) do
-        if not maintenance[server.id] and pool:server_is_ok(server) then
+        if not maintenance[server.id] then
+            assert(server.conn:is_connected())
             return server
         end
     end
@@ -187,7 +179,7 @@ local function server_connect(server)
     local uri = server.login .. ':' .. server.password .. '@' .. server.uri
 
     -- try to join replica
-    server.conn = remote:new(uri, { reconnect_after = RECONNECT_AFTER })
+    server.conn = remote:connect(uri, { reconnect_after = RECONNECT_AFTER })
     -- ping node
     local joined = wait_server_is_connected(server.conn)
 
@@ -228,39 +220,36 @@ local function on_action(self, msg)
     log.info(msg)
 end
 
-local function cluster_operation(func_name, id)
+local function cluster_operation(func_name, id, timeout)
     local jlog = {}
     local all_ok = true
 
     for _, replica_set in ipairs(replica_sets) do
          for _, server in ipairs(replica_set) do
-             if server.id ~= id then
-                 local result, err = pcall(function()
-                     log.info(
-                         "Trying to '%s' shard %d with shard %s",
-                         func_name, server.id, server.uri
-                     )
-                     local conn = server.conn
-                     return conn[nb_call](conn, func_name, id)[1][1]
-                 end)
-                 if not result then
-                     local msg = string.format(
-                        '"%s" error: %s',
-                        func_name, tostring(err)
-                     )
-                     table.insert(jlog, msg)
-                     log.error(msg)
-                     all_ok = false
-                 else
-                     local msg = string.format(
-                         "Operaion '%s' for shard %d in node '%s' applied",
-                         func_name, server.id, server.uri
-                     )
-                     table.insert(jlog, msg)
-                     shard_obj:on_action(msg)
-                 end
-             end
-         end
+            if server.id ~= id then
+                local result, err = pcall(function()
+                    log.info("Trying to '%s' shard %d with shard %s",
+                             func_name, server.id, server.uri)
+                    log.info({id = id})
+                    local conn = server.conn
+                    return conn:call(func_name, {id},
+                                     {timeout = request_timeout})
+                end)
+                if not result then
+                    local msg = string.format('"%s" error: %s', func_name,
+                                              tostring(err))
+                    table.insert(jlog, msg)
+                    log.error(msg)
+                    all_ok = false
+                else
+                    local msg = string.format("Operaion '%s' for shard %d in "..
+                                              "node '%s' applied", func_name,
+                                              server.id, server.uri)
+                    table.insert(jlog, msg)
+                    shard_obj:on_action(msg)
+                end
+            end
+        end
     end
     return all_ok, jlog
 end
@@ -372,8 +361,9 @@ local function mr_select(self, space, index_no, index, limits, key)
     for _, replica_set in ipairs(replica_sets) do
         local server = nil
         for _, srv in ipairs(replica_set) do
-            if not maintenance[srv.id] and pool:server_is_ok(srv) then
+            if not maintenance[srv.id] then
                 server = srv
+                assert(srv.conn:is_connected())
                 break
             end
         end
@@ -407,21 +397,6 @@ local function secondary_select(self, space, index_no, index, limits, key)
     return mr_select(self, space, index_no, index, limits, key)
 end
 
-local function direct_call(self, server, func_name, ...)
-    local result = nil
-    local status, reason = pcall(function(...)
-        local conn = server.conn
-        result = conn[nb_call](conn, func_name, ..., {timeout = REMOTE_TIMEOUT})
-    end, ...)
-    if not status then
-        log.error('failed to call %s on %s: %s', func_name, server.uri, reason)
-        if not server.conn:is_connected() then
-            log.error("server %s is offline", server.uri)
-        end
-    end
-    return result
-end
-
 -- shards request function
 local function request(self, space, operation, tuple_id, ...)
     local server = server_by_key(tuple_id)
@@ -432,7 +407,7 @@ local function request(self, space, operation, tuple_id, ...)
 end
 
 local function next_id(space)
-    local server_id = pool.self_server.id
+    local server_id = self_server.id
     local s = box.space[space]
     if s == nil then
         box.error(box.error.NO_SUCH_SPACE, tostring(space))
@@ -515,14 +490,6 @@ local function check_connection(conn)
     return true
 end
 
-local function is_table_filled()
-    return pool:is_table_filled()
-end
-
-local function wait_table_fill()
-    return pool:wait_table_fill()
-end
-
 local function shard_mapping(servers)
     -- iterate over all zones, and build shards, aka replica set
     -- each replica set has 'redundancy' servers from different
@@ -539,13 +506,11 @@ local function shard_mapping(servers)
             replica_sets[replica_set_i] = {}
         end
         log.info('Adding %s to replica set %d', server.uri, replica_set_i)
+        server.id = server_id
+        server_id = server_id + 1
         table.insert(replica_sets[replica_set_i], server)
     end
     log.info("shard count = %d", replica_sets_n)
-end
-
-local function get_heartbeat()
-    return pool:get_heartbeat()
 end
 
 local function enable_operations()
@@ -555,7 +520,6 @@ local function enable_operations()
     shard_obj.index_call = index_call
     shard_obj.secondary_select = secondary_select
     shard_obj.mr_select = mr_select
-    shard_obj.direct_call = direct_call
     shard_obj.request = request
 
     -- set 1-phase operations
@@ -568,7 +532,6 @@ local function enable_operations()
 
     -- set helpers
     shard_obj.on_action = on_action
-    shard_obj.get_heartbeat = get_heartbeat
 
     -- enable easy spaces access
     setmetatable(shard_obj, {
@@ -614,19 +577,22 @@ local function enable_operations()
     })
 end
 
+local function on_server_connected(conn)
+    join_server(conn.id)
+end
+
+local function on_server_disconnected(conn)
+    epoch_counter = epoch_counter + 1
+    unjoin_server(conn.id)
+end
+
 -- init shard, connect with servers
 local function init(cfg, callback)
     cfg = config_util.check_cfg(cfg)
+    request_timeout = cfg.request_timeout
     log.info('Sharding initialization started...')
-    -- set constants
-    pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
-    pool.HEARTBEAT_TIMEOUT = shard_obj.HEARTBEAT_TIMEOUT
-    pool.DEAD_TIMEOUT = shard_obj.DEAD_TIMEOUT
-    pool.RECONNECT_AFTER = shard_obj.RECONNECT_AFTER
 
-    --init connection pool
-    pool:init(cfg)
-    shard_mapping(pool.servers)
+    shard_mapping(cfg.servers)
     local min_redundancy = 999999999
     for _, replica_set in ipairs(replica_sets) do
         if min_redundancy > #replica_set then
@@ -639,8 +605,9 @@ local function init(cfg, callback)
         log.error(msg)
         error(msg)
     end
-    redundancy = min_redundancy
-    log.info("redundancy = %d", redundancy)
+    log.info("redundancy = %d", min_redundancy)
+    self_server = config_util.connect(replica_sets, cfg, on_server_connected,
+                                      on_server_disconnected)
 
     wait_connection()
     config_util.check_schema(replica_sets)
@@ -657,11 +624,13 @@ local function len(self)
 end
 
 local function get_epoch()
-    return pool:get_epoch()
+    return epoch_counter
 end
 
 local function wait_epoch(epoch)
-    return pool:wait_epoch(epoch)
+    while epoch_counter < epoch do
+        fiber.sleep(0.01)
+    end
 end
 
 -- declare global functions
@@ -675,23 +644,16 @@ _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
 
 shard_obj = {
-    REMOTE_TIMEOUT = REMOTE_TIMEOUT,
-    HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
-    DEAD_TIMEOUT = DEAD_TIMEOUT,
     RECONNECT_AFTER = RECONNECT_AFTER,
 
     replica_sets = replica_sets,
     len = len,
-    redundancy = redundancy,
     is_connected = is_connected,
     wait_connection = wait_connection,
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
-    is_table_filled = is_table_filled,
-    wait_table_fill = wait_table_fill,
     init = init,
     server_by_key = server_by_key,
-    pool = pool,
     call = call,
     shard_function = shard_function,
 }

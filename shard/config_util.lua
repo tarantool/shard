@@ -1,3 +1,5 @@
+remote = require('net.box')
+
 --
 -- Check sharding configuration on basic options.
 --
@@ -53,7 +55,9 @@ local cfg_template = {
     pool_name = 'string',
     redundancy = 'number',
     rsd_max_rps = 'number',
-    binary = 'number'
+    binary = 'number',
+    reconnect_after = 'number',
+    request_timeout = 'number',
 }
 
 --
@@ -65,6 +69,8 @@ local cfg_default = {
     pool_name = 'sharding_pool',
     redundancy = 2,
     rsd_max_rps = 1000,
+    reconnect_after = 1,
+    request_timeout = 0.3
 }
 
 --
@@ -197,7 +203,34 @@ local function check_schema(replica_sets)
     end
 end
 
+local function connect(replica_sets, cfg, on_connect, on_disconnect)
+    local self_server = nil
+    local base_uri = ''
+    if cfg.password == '' then
+        base_uri = string.format('%s@', cfg.login)
+    else
+        base_uri = string.format('%s:%s@', cfg.login, cfg.password)
+    end
+    base_uri = base_uri..'%s'
+    for _, replica_set in ipairs(replica_sets) do
+        for _, server in ipairs(replica_set) do
+            local uri = string.format(base_uri, server.uri)
+            server.conn =
+                remote:connect(uri, { reconnect_after = cfg.reconnect_after })
+            server.conn.id = server.id
+            if server.conn:eval("return box.info.server.uuid") ==
+               box.info.server.uuid then
+                self_server = server
+            end
+            server.conn:on_connect(on_connect)
+            server.conn:on_disconnect(on_disconnect)
+        end
+    end
+    return self_server
+end
+
 return {
     check_schema = check_schema,
     check_cfg = function(cfg) return check_cfg(cfg_template, cfg_default, cfg) end,
+    connect = connect,
 }

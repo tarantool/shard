@@ -9,7 +9,6 @@ shard.wait_connection()
 -- Kill server and wait for monitoring fibers kill
 _ = test_run:cmd("stop server master1")
 shard.wait_epoch(2)
-shard.is_table_filled()
 
 test_run:cmd("cleanup server master1")
 test_run:cmd("switch default")

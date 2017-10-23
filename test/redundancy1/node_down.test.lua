@@ -4,29 +4,15 @@ servers = { 'master0', 'master1', 'master2' }
 test_run:create_cluster(servers, 'redundancy1')
 test_run:cmd('switch master0')
 shard.wait_connection()
-shard.wait_table_fill()
-shard.is_table_filled()
-
-test_run:cmd("switch master1")
-shard.wait_table_fill()
-shard.is_table_filled()
-
-test_run:cmd("switch master2")
-shard.wait_table_fill()
-shard.is_table_filled()
-
-test_run:cmd("switch master0")
 
 -- Kill server and wait for monitoring fibers kill
 _ = test_run:cmd("stop server master1")
 
 -- Check that node is removed from shard
 shard.wait_epoch(2)
-shard.is_table_filled()
 
 test_run:cmd("switch master2")
 shard.wait_epoch(2)
-shard.is_table_filled()
 
 test_run:cmd('switch default')
 test_run:cmd("cleanup server master1")

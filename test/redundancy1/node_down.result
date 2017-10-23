@@ -17,39 +17,6 @@ test_run:cmd('switch master0')
 shard.wait_connection()
 ---
 ...
-shard.wait_table_fill()
----
-...
-shard.is_table_filled()
----
-- true
-...
-test_run:cmd("switch master1")
----
-- true
-...
-shard.wait_table_fill()
----
-...
-shard.is_table_filled()
----
-- true
-...
-test_run:cmd("switch master2")
----
-- true
-...
-shard.wait_table_fill()
----
-...
-shard.is_table_filled()
----
-- true
-...
-test_run:cmd("switch master0")
----
-- true
-...
 -- Kill server and wait for monitoring fibers kill
 _ = test_run:cmd("stop server master1")
 ---
@@ -58,20 +25,12 @@ _ = test_run:cmd("stop server master1")
 shard.wait_epoch(2)
 ---
 ...
-shard.is_table_filled()
----
-- true
-...
 test_run:cmd("switch master2")
 ---
 - true
 ...
 shard.wait_epoch(2)
 ---
-...
-shard.is_table_filled()
----
-- true
 ...
 test_run:cmd('switch default')
 ---

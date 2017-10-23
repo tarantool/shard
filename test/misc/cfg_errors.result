@@ -202,8 +202,8 @@ space2._format[2] = nil
 ...
 check_schema(replica_sets)
 ---
-file.lua:<line>: Schema is
-    inconsistent: format of a space space1 has different field count on localhost3313
+file.lua:<line>: Schema
+    is inconsistent: format of a space space1 has different field count on localhost3313
     and localhost3314'
 ...
 space2._format[2] = table.deepcopy(space1._format[2])
@@ -214,8 +214,8 @@ space2._format[2].name = 'new_name'
 ...
 check_schema(replica_sets)
 ---
-file.lua:<line>: Schema is
-    inconsistent: field 2 of a space space1 has different "name" on localhost3313
+file.lua:<line>: Schema
+    is inconsistent: field 2 of a space space1 has different "name" on localhost3313
     and localhost3314'
 ...
 space2._format[2].name = space1._format[2].name
@@ -226,8 +226,8 @@ space2._format[2].type = 'scalar'
 ...
 check_schema(replica_sets)
 ---
-file.lua:<line>: Schema is
-    inconsistent: field 2 of a space space1 has different "type" on localhost3313
+file.lua:<line>: Schema
+    is inconsistent: field 2 of a space space1 has different "type" on localhost3313
     and localhost3314'
 ...
 space2._format[2].type = space1._format[2].type

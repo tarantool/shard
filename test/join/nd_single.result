@@ -129,7 +129,9 @@ status = shard_status()
 ...
 status
 ---
-- maintenance: []
+- maintenance:
+  - null
+  - true
   offline:
   - uri: localhost:33131
     id: 2
@@ -157,7 +159,10 @@ _ = remote_join(status.offline[1].id)
 ...
 shard_status()
 ---
-- maintenance: []
+- maintenance:
+  - null
+  - null
+  - true
   offline:
   - uri: localhost:33132
     id: 3
@@ -247,7 +252,10 @@ status = shard_status()
 ...
 status
 ---
-- maintenance: []
+- maintenance:
+  - null
+  - null
+  - true
   offline:
   - uri: localhost:33132
     id: 3

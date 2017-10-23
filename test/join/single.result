@@ -102,7 +102,9 @@ status = shard_status()
 ...
 status
 ---
-- maintenance: []
+- maintenance:
+  - null
+  - true
   offline:
   - uri: localhost:33131
     id: 2
