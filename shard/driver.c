@@ -26,13 +26,11 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-#include <module.h>
-
 #include <stdio.h>
 #include <stdlib.h>
-
 #include <lua.h>
 #include <lauxlib.h>
+#include <module.h>
 
 #include "ibuf.h"
 #include "msgpuck.h"
@@ -53,8 +51,7 @@ static uint32_t merger_type_id = 0;
 struct merger {
 	heap_t heap;
 	uint32_t count;
-	uint32_t capacity;
-	struct source **sources;
+	struct source *sources;
 	struct key_def *key_def;
 	box_tuple_format_t *format;
 	int order;
@@ -84,6 +81,8 @@ source_less(const heap_t *heap, const struct heap_node *a,
 static inline void
 source_fetch(struct source *source, box_tuple_format_t *format)
 {
+	if (source->tuple != NULL)
+		box_tuple_unref(source->tuple);
 	source->tuple = NULL;
 	if (ibuf_used(source->buf) == 0)
 		return;
@@ -100,83 +99,80 @@ static void
 free_sources(struct merger *merger)
 {
 	for (uint32_t i = 0; i < merger->count; ++i) {
-		if (merger->sources[i]->tuple != NULL)
-			box_tuple_unref(merger->sources[i]->tuple);
-		free(merger->sources[i]);
+		if (merger->sources[i].tuple != NULL)
+			box_tuple_unref(merger->sources[i].tuple);
 	}
 	merger->count = 0;
 	free(merger->sources);
-	merger->capacity = 0;
+	merger->sources = NULL;
 	merger_heap_destroy(&merger->heap);
 	merger_heap_create(&merger->heap);
+}
+
+static inline struct source *
+merger_create_source(struct merger *merger, uint32_t i, struct ibuf *buf)
+{
+	assert(i < merger->count);
+	const char **p = (const char **)&buf->rpos;
+	if (mp_typeof(**p) != MP_MAP || mp_decode_map(p) != 1 ||
+	    mp_typeof(**p) != MP_UINT || mp_decode_uint(p) != IPROTO_DATA ||
+	    mp_typeof(**p) != MP_ARRAY) {
+		free_sources(merger);
+		return NULL;
+	}
+	mp_decode_array(p);
+	struct source *source = &merger->sources[i];
+	source->buf = buf;
+	return source;
+}
+
+static inline struct merger *
+luaL_merger(struct lua_State *L, int index)
+{
+	struct merger **merger_ptr;
+	uint32_t cdata_type;
+	merger_ptr = luaL_checkcdata(L, index, &cdata_type);
+	if (merger_ptr == NULL || cdata_type != merger_type_id) {
+		luaL_error(L, "Expected merger");
+		return NULL;
+	}
+	return *merger_ptr;
 }
 
 static int
 lbox_merger_start(struct lua_State *L)
 {
-	struct merger **merger_ptr;
-	uint32_t cdata_type;
-	if (lua_gettop(L) != 3 || lua_istable(L, 2) != 1 ||
-	    lua_isnumber(L, 3) != 1 ||
-	    (merger_ptr = luaL_checkcdata(L, 1, &cdata_type)) == NULL ||
-	    cdata_type != merger_type_id) {
-		return luaL_error(L, "Bad params, use: start(merger, {buffers}, "
-				  "order)");
+	if (lua_gettop(L) != 3 || !lua_istable(L, 2) || !lua_isnumber(L, 3)) {
+		return luaL_error(L, "Bad params, use: start(merger, "\
+				     "{buffers}, order)");
 	}
-	struct merger *merger = *merger_ptr;
+	struct merger *merger = luaL_merger(L, 1);
 	merger->order =	lua_tointeger(L, 3) >= 0? 1: -1;
+	uint32_t src_count = lua_objlen(L, 2);
 	free_sources(merger);
 
-	merger->capacity = 8;
-	merger->sources = (struct source **)malloc(merger->capacity *
-						   sizeof(struct source));
+	merger->sources = (struct source *)calloc(src_count,
+						  sizeof(struct source));
 	if (merger->sources == NULL)
 		return luaL_error(L, "Can't alloc sources buffer");
+	merger->count = src_count;
 	/* Fetch all sources */
-	while (true) {
-		lua_pushinteger(L, merger->count + 1);
-		lua_gettable(L, 2);
-		if (lua_isnil(L, -1))
-			break;
+	for (uint32_t i = 0; i < src_count; ++i) {
+		lua_rawgeti(L, 2, i + 1);
+		assert(! lua_isnil(L, -1));
 		struct ibuf *buf = (struct ibuf *)lua_topointer(L, -1);
-		if (buf == NULL)
-			break;
-		if (ibuf_used(buf) == 0)
-			continue;
-		if (merger->count == merger->capacity) {
-			merger->capacity *= 2;
-			struct source **new_sources;
-			new_sources =
-				(struct source **)realloc(merger->sources,
-					merger->capacity * sizeof(struct source *));
-			if (new_sources == NULL) {
-				free_sources(merger);
-				return luaL_error(L, "Can't alloc sources buffer");
-			}
-			merger->sources = new_sources;
-		}
-		merger->sources[merger->count] =
-			(struct source *)malloc(sizeof(struct source *));
-		if (merger->sources[merger->count] == NULL) {
+		lua_pop(L, 1);
+		assert(buf != NULL);
+		/* At least iproto header exists. */
+		assert(ibuf_used(buf) != 0);
+		struct source *source = merger_create_source(merger, i, buf);
+		if (source == NULL) {
 			free_sources(merger);
-			return luaL_error(L, "Can't alloc merge source");
+			return luaL_error(L, "Incorrect response");
 		}
-		if (mp_typeof(*buf->rpos) != MP_MAP ||
-		    mp_decode_map((const char **)&buf->rpos) != 1 ||
-		    mp_typeof(*buf->rpos) != MP_UINT ||
-		    mp_decode_uint((const char **)&buf->rpos) != IPROTO_DATA ||
-		    mp_typeof(*buf->rpos) != MP_ARRAY) {
-			free_sources(merger);
-			return luaL_error(L, "Invalid merge source");
-		}
-		mp_decode_array((const char **)&buf->rpos);
-		merger->sources[merger->count]->buf = buf;
-		merger->sources[merger->count]->tuple = NULL;
-		source_fetch(merger->sources[merger->count], merger->format);
-		if (merger->sources[merger->count]->tuple != NULL)
-			merger_heap_insert(&merger->heap,
-					   &merger->sources[merger->count]->hnode);
-		++merger->count;
+		source_fetch(source, merger->format);
+		if (source->tuple != NULL)
+			merger_heap_insert(&merger->heap, &source->hnode);
 	}
 	lua_pushboolean(L, true);
 	return 1;
@@ -185,14 +181,7 @@ lbox_merger_start(struct lua_State *L)
 static int
 lbox_merge_next(struct lua_State *L)
 {
-	struct merger **merger_ptr;
-	uint32_t cdata_type;
-	if (lua_gettop(L) != 1 ||
-	    (merger_ptr = luaL_checkcdata(L, 1, &cdata_type)) == NULL ||
-	    cdata_type != merger_type_id) {
-		return luaL_error(L, "Bad params, use: next(merger)");
-	}
-	struct merger *merger = *merger_ptr;
+	struct merger *merger = luaL_merger(L, 1);
 	struct heap_node *hnode = merger_heap_top(&merger->heap);
 	if (hnode == NULL) {
 		lua_pushnil(L);
@@ -200,7 +189,6 @@ lbox_merge_next(struct lua_State *L)
 	}
 	struct source *source = container_of(hnode, struct source, hnode);
 	luaT_pushtuple(L, source->tuple);
-	box_tuple_unref(source->tuple);
 	source_fetch(source, merger->format);
 	if (source->tuple == NULL)
 		merger_heap_delete(&merger->heap, hnode);
@@ -212,71 +200,54 @@ lbox_merge_next(struct lua_State *L)
 static int
 lbox_merger_new(struct lua_State *L)
 {
+	const char *error_msg = NULL;
 	if (lua_gettop(L) != 1 || lua_istable(L, 1) != 1) {
-		return luaL_error(L, "Bad params, use: new({"
-				  "{fieldno = fieldno, type = type}, ...}");
+		return luaL_error(L, "Bad params, use: new({"\
+				     "{fieldno = fieldno, type = type}, ...}");
 	}
-	uint16_t count = 0, capacity = 8;
-	uint32_t *fieldno = NULL;
-	enum field_type *type = NULL;
-	fieldno = (uint32_t *)malloc(sizeof(*fieldno) * capacity);
+	uint32_t part_count = lua_objlen(L, 1);
+	uint32_t *fieldno = (uint32_t *)malloc(sizeof(*fieldno) * part_count);
 	if (fieldno == NULL)
 		return luaL_error(L, "Can not alloc fieldno buffer");
-	type = (enum field_type *)malloc(sizeof(*type) * capacity);
+	enum field_type *type =
+		(enum field_type *)malloc(sizeof(*type) * part_count);
 	if (type == NULL) {
 		free(fieldno);
 		return luaL_error(L, "Can not alloc type buffer");
 	}
-	while (true) {
-		lua_pushinteger(L, count + 1);
-		lua_gettable(L, 1);
-		if (lua_isnil(L, -1))
-			break;
-		if (count == capacity) {
-			capacity *= 2;
-			uint32_t *old_fieldno = fieldno;
-			fieldno = (uint32_t *)realloc(fieldno,
-				sizeof(*fieldno) * capacity);
-			if (fieldno == NULL) {
-				free(old_fieldno);
-				free(type);
-				return luaL_error(L, "Can not alloc fieldno buffer");
-			}
-			enum field_type *old_type = type;
-			type = (enum field_type *)realloc(type,
-				sizeof(*type) * capacity);
-			if (type == NULL) {
-				free(fieldno);
-				free(old_type);
-				return luaL_error(L, "Can not alloc type buffer");
-			}
+	for (uint32_t i = 0; i < part_count; ++i) {
+		lua_rawgeti(L, 1, i + 1);
+		if (lua_isnil(L, -1)) {
+			error_msg = "Incorrect parts array";
+			goto error;
 		}
-		lua_pushstring(L, "fieldno");
-		lua_gettable(L, -2);
-		if (lua_isnil(L, -1))
-			break;
-		fieldno[count] = lua_tointeger(L, -1);
+		lua_getfield(L, -1, "fieldno");
+		if (lua_isnil(L, -1)) {
+			error_msg = "Fieldno not found";
+			goto error;
+		}
+		fieldno[i] = lua_tointeger(L, -1);
 		lua_pop(L, 1);
-		lua_pushstring(L, "type");
-		lua_gettable(L, -2);
-		if (lua_isnil(L, -1))
-			break;
-		type[count] = lua_tointeger(L, -1);
+		lua_getfield(L, -1, "type");
+		if (lua_isnil(L, -1)) {
+			error_msg = "Type not found";
+			goto error;
+		}
+		type[i] = lua_tointeger(L, -1);
 		lua_pop(L, 1);
-		++count;
+		lua_pop(L, 1);
 	}
 
 	struct merger *merger = calloc(1, sizeof(*merger));
 	if (merger == NULL) {
-		free(fieldno);
-		free(type);
-		return luaL_error(L, "Can not alloc merger");
+		error_msg = "Can not alloc merger";
+		goto error;
 	}
-	merger->key_def = box_key_def_new(fieldno, type, count);
+
+	merger->key_def = box_key_def_new(fieldno, type, part_count);
 	if (merger->key_def == NULL) {
-		free(fieldno);
-		free(type);
-		return luaL_error(L, "Can not alloc key_def");
+		error_msg = "Can not alloc key_def";
+		goto error;
 	}
 	free(fieldno);
 	free(type);
@@ -290,19 +261,20 @@ lbox_merger_new(struct lua_State *L)
 
 	*(struct merger **)luaL_pushcdata(L, merger_type_id) = merger;
 	return 1;
+
+error:
+	free(fieldno);
+	free(type);
+	return luaL_error(L, error_msg);
 }
 
 static int
 lbox_merger_cmp(lua_State *L)
 {
-	struct merger **merger_ptr;
-	uint32_t cdata_type;
-	if (lua_gettop(L) != 2 ||
-	    (merger_ptr = luaL_checkcdata(L, 1, &cdata_type)) == NULL ||
-	    cdata_type != merger_type_id)
+	if (lua_gettop(L) != 2)
 		return luaL_error(L, "Bad params, use: cmp(merger, key)");
+	struct merger *merger = luaL_merger(L, 1);
 	const char *key = lua_tostring(L, 2);
-	struct merger *merger = *merger_ptr;
 	struct heap_node *hnode = merger_heap_top(&merger->heap);
 	if (hnode == NULL) {
 		lua_pushnil(L);
@@ -318,12 +290,7 @@ lbox_merger_cmp(lua_State *L)
 static int
 lbox_merger_del(lua_State *L)
 {
-	struct merger **merger_ptr;
-	uint32_t cdata_type;
-	if ((merger_ptr = luaL_checkcdata(L, 1, &cdata_type)) == NULL ||
-	    cdata_type != merger_type_id)
-		return 0;
-	struct merger *merger = *merger_ptr;
+	struct merger *merger = luaL_merger(L, 1);
 	free_sources(merger);
 	box_key_def_delete(merger->key_def);
 	box_tuple_format_unref(merger->format);
