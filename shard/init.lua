@@ -267,7 +267,7 @@ local function remote_unjoin(id)
 end
 
 -- base remote operation on space
-local function space_call(self, space, server, fun, ...)
+local function space_call(space, server, fun, ...)
     local result = nil
     local status, reason = pcall(function(...)
         local conn = server.conn
@@ -289,15 +289,14 @@ local function space_call(self, space, server, fun, ...)
 end
 
 -- primary index wrapper on space_call
-local function single_call(self, space, server, operation, ...)
-    return self:space_call(space, server, function(space_obj, ...)
+local function single_call(space, server, operation, ...)
+    return space_call(space, server, function(space_obj, ...)
         return space_obj[operation](space_obj, ...)
     end, ...)
 end
 
-local function index_call(self, space, server, operation,
-                          index_no, ...)
-    return self:space_call(space, server, function(space_obj, ...)
+local function index_call(space, server, operation, index_no, ...)
+    return space_call(space, server, function(space_obj, ...)
         local index = space_obj.index[index_no]
         return index[operation](index, ...)
     end, ...)
@@ -346,7 +345,7 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(self, space, index_no, index, limits, key)
+local function mr_select(space, index_no, index, limits, key)
     local results = {}
     local merge_obj = nil
     if limits == nil then
@@ -373,10 +372,8 @@ local function mr_select(self, space, index_no, index, limits, key)
             if merge_obj == nil then
                 merge_obj = get_merger(server.conn.space[space], index_no)
             end
-            local part = index_call(
-                self, space, server, 'select',
-                index_no, index, limits
-            )
+            local part = index_call(space, server, 'select', index_no, index,
+                                    limits)
             table.insert(results, buf)
         end
     end
@@ -393,17 +390,17 @@ local function mr_select(self, space, index_no, index, limits, key)
     return tuples
 end
 
-local function secondary_select(self, space, index_no, index, limits, key)
-    return mr_select(self, space, index_no, index, limits, key)
+local function secondary_select(space, index_no, index, limits, key)
+    return mr_select(space, index_no, index, limits, key)
 end
 
 -- shards request function
-local function request(self, space, operation, tuple_id, ...)
+local function request(space, operation, tuple_id, ...)
     local server = server_by_key(tuple_id)
     if server == nil then
         return nil
     end
-    return single_call(self, space, server, operation, ...)
+    return single_call(space, server, operation, ...)
 end
 
 local function next_id(space)
@@ -459,30 +456,30 @@ end
 -- default request wrappers for db operations
 local function insert(self, space, data)
     local tuple_id = extract_key(space, data)
-    return request(self, space, 'insert', tuple_id, data)
+    return request(space, 'insert', tuple_id, data)
 end
 
 local function auto_increment(self, space, data)
     local id = next_id(space)
     table.insert(data, 1, id)
-    return request(self, space, 'insert', {id}, data)
+    return request(space, 'insert', {id}, data)
 end
 
 local function select(self, space, key, args)
-    return request(self, space, 'select', key, key, args)
+    return request(space, 'select', key, key, args)
 end
 
 local function replace(self, space, data)
     local tuple_id = extract_key(space, data)
-    return request(self, space, 'replace', tuple_id, data)
+    return request(space, 'replace', tuple_id, data)
 end
 
 local function delete(self, space, key)
-    return request(self, space, 'delete', key, key)
+    return request(space, 'delete', key, key)
 end
 
 local function update(self, space, key, data)
-    return request(self, space, 'update', key, key, data)
+    return request(space, 'update', key, key, data)
 end
 
 -- function to check a connection after it's established
@@ -514,14 +511,6 @@ local function shard_mapping(servers)
 end
 
 local function enable_operations()
-    -- set base operations
-    shard_obj.single_call = single_call
-    shard_obj.space_call = space_call
-    shard_obj.index_call = index_call
-    shard_obj.secondary_select = secondary_select
-    shard_obj.mr_select = mr_select
-    shard_obj.request = request
-
     -- set 1-phase operations
     shard_obj.insert = insert
     shard_obj.auto_increment = auto_increment
@@ -557,20 +546,20 @@ local function enable_operations()
                     return self.update(self, space, ...)
                 end,
 
-                                single_call = function(this, ...)
-                    return self.single_call(self, space, ...)
+                single_call = function(this, ...)
+                    return single_call(space, ...)
                 end,
                 space_call = function(this, ...)
-                    return self.space_call(self, space, ...)
+                    return space_call(space, ...)
                 end,
                 index_call = function(this, ...)
-                    return self.index_call(self, space, ...)
+                    return index_call(space, ...)
                 end,
                 secondary_select = function(this, ...)
-                    return self.secondary_select(self, space, ...)
+                    return secondary_select(space, ...)
                 end,
                 mr_select = function(this, ...)
-                    return self.mr_select(self, space, ...)
+                    return mr_select(space, ...)
                 end
             }
         end
@@ -656,6 +645,11 @@ shard_obj = {
     server_by_key = server_by_key,
     call = call,
     shard_function = shard_function,
+
+    single_call = single_call,
+    space_call = space_call,
+    mr_select = mr_select,
+    secondary_select = secondary_select,
 }
 
 return shard_obj
