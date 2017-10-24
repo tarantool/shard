@@ -26,7 +26,7 @@ test_run:cmd('switch master0')
 shard.wait_connection()
 ---
 ...
-for i=1, 10 do shard.demo:insert{i, 'test'} end
+for i=1, 10 do shard.space.demo:insert{i, 'test'} end
 ---
 ...
 -- check data
@@ -102,7 +102,7 @@ test_run:cmd("stop server master2")
 - true
 ...
 -- add tuples
-for i=11, 20 do shard.demo:insert{i, 'join_test'} end
+for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
 ---
 ...
 status = shard_status()

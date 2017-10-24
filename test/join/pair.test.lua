@@ -8,7 +8,7 @@ test_run:wait_fullmesh({'master2', 'master5'})
 test_run:cmd('switch master0')
 shard.wait_connection()
 
-for i=1, 10 do shard.demo:insert{i, 'test'} end
+for i=1, 10 do shard.space.demo:insert{i, 'test'} end
 
 -- check data
 box.space.demo:select()
@@ -36,7 +36,7 @@ status = shard_status()
 status
 
 -- add tuples
-result = shard.demo:insert{12, 'test_pair'}
+result = shard.space.demo:insert{12, 'test_pair'}
 result
 
 -- start servers
@@ -46,7 +46,7 @@ test_run:wait_fullmesh({'master1', 'master4'})
 _ = remote_join(status.offline[2].id)
 _ = remote_join(status.offline[1].id)
 shard_status()
-shard.demo:insert{12, 'test_pair'}
+shard.space.demo:insert{12, 'test_pair'}
 
 -- check joined replica
 box.space.demo:select()

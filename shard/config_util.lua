@@ -58,6 +58,7 @@ local cfg_template = {
     binary = 'number',
     reconnect_after = 'number',
     request_timeout = 'number',
+    use_min_schema = 'boolean',
 }
 
 --
@@ -70,7 +71,8 @@ local cfg_default = {
     redundancy = 2,
     rsd_max_rps = 1000,
     reconnect_after = 1,
-    request_timeout = 0.3
+    request_timeout = 0.3,
+    use_min_schema = false,
 }
 
 --
@@ -145,6 +147,18 @@ local function check_indexes_are_equal(index1, uri1, index2, uri2, name)
     end
 end
 
+local function build_indexes(space)
+    local index_routers = {}
+    for name, index in pairs(space.index) do
+        if type(name) == 'string' then
+            local router = { name = name, id = index.id, space_name = space.name }
+            index_routers[name] = router
+            index_routers[index.id] = router
+        end
+    end
+    return index_routers
+end
+
 local function check_spaces_are_equal(space1, uri1, space2, uri2)
     -- Spaces are selected by the same name.
     assert(space1.name == space2.name)
@@ -162,11 +176,15 @@ local function check_spaces_are_equal(space1, uri1, space2, uri2)
     local space_index_count1 = 0
     for name, index1 in pairs(space1.index) do
         space_index_count1 = space_index_count1 + 1
-        local index2 = space2.index[name]
-        if index2 == nil then
-            error(string.format(err_no_index, space1.name, name, uri1, uri2))
+        -- Do not validate the same index twice. Use only its
+        -- name, not id.
+        if type(name) == 'string' then
+            local index2 = space2.index[name]
+            if index2 == nil then
+                error(string.format(err_no_index, space1.name, name, uri1, uri2))
+            end
+            check_indexes_are_equal(index1, uri1, index2, uri1, space1.name)
         end
-        check_indexes_are_equal(index1, uri1, index2, uri1, space1.name)
     end
     local space_index_count2 = 0
     for name, index2 in pairs(space2.index) do
@@ -177,30 +195,55 @@ local function check_spaces_are_equal(space1, uri1, space2, uri2)
     end
 end
 
-local function check_schema(replica_sets)
+local function build_schema(replica_sets, cfg)
+    local space_routers = {}
     -- The algorithm is to get a one server from each replica set
     -- because on other servers the schema is the same.
     local server1 = replica_sets[1][1]
+    if #replica_sets == 1 then
+        for name, space in pairs(server1.conn.space) do
+            if type(name) == 'string' then
+                local router = { name = name, id = space.id,
+                                 index = build_indexes(space) }
+                space_routers[name] = router
+                space_routers[space.id] = router
+            end
+        end
+        return space_routers
+    end
     for i = 2, #replica_sets do
         local server2 = replica_sets[i][1]
         local space_count1 = 0
         for name, space1 in pairs(server1.conn.space) do
             space_count1 = space_count1 + 1
-            local space2 = server2.conn.space[name]
-            if space2 == nil then
-                error(string.format(err_no_space, server1.uri, name,
-                                    server2.uri))
+            -- Do not validate the same space twice. Use only its
+            -- name, not id.
+            if type(name) == 'string' then
+                local space2 = server2.conn.space[name]
+                if space2 == nil then
+                    if not cfg.use_min_schema then
+                        error(string.format(err_no_space, server1.uri, name,
+                                            server2.uri))
+                    end
+                else
+                    check_spaces_are_equal(space1, server1.uri, space2,
+                                           server2.uri)
+                    local router = { name = name, id = space1.id,
+                                     index = build_indexes(space1) }
+                    space_routers[name] = router
+                    space_routers[space1.id] = router
+                end
             end
-            check_spaces_are_equal(space1, server1.uri, space2, server2.uri)
         end
         local space_count2 = 0
         for name, space2 in pairs(server2.conn.space) do
             space_count2 = space_count2 + 1
         end
-        if space_count1 ~= space_count2 then
+        if space_count1 ~= space_count2 and not cfg.use_min_schema then
             error(string.format(err_space_count, server1.uri, server2.uri))
         end
     end
+    return space_routers
 end
 
 local function connect(replica_sets, cfg, on_connect, on_disconnect)
@@ -230,7 +273,7 @@ local function connect(replica_sets, cfg, on_connect, on_disconnect)
 end
 
 return {
-    check_schema = check_schema,
+    build_schema = build_schema,
     check_cfg = function(cfg) return check_cfg(cfg_template, cfg_default, cfg) end,
     connect = connect,
 }

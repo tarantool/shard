@@ -110,18 +110,29 @@ replica_sets[2] = table.deepcopy(replica_sets[1])
 replica_sets[2][1].uri = 'localhost3314'
 ---
 ...
-check_schema = require('shard.config_util').check_schema
+build_schema = require('shard.config_util').build_schema
+---
+...
+cfg = {}
 ---
 ...
 -- Ok, schemas are equal.
-check_schema(replica_sets)
+s = build_schema(replica_sets, cfg)
 ---
+...
+s.space1.index.pk.name
+---
+- pk
+...
+s.space1.index.sk.name
+---
+- sk
 ...
 -- Different space count.
 replica_sets[2][1].conn.space.space2 = {'smoke weed every day'}
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: localhost3313 has different space count with localhost3314'
@@ -136,7 +147,7 @@ replica_sets[1][1].conn.space.space2 = table.deepcopy(replica_sets[1][1].conn.sp
 replica_sets[1][1].conn.space.space2.name = 'space2'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: localhost3313 has space space2, but localhost3314 does not'
@@ -154,7 +165,7 @@ space2 = replica_sets[2][1].conn.space.space1
 space2.id = 600
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has different "id" on localhost3313 and localhost3314'
@@ -165,7 +176,7 @@ space2.id = space1.id
 space2.engine = 'vinyl'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has different "engine" on localhost3313 and localhost3314'
@@ -176,7 +187,7 @@ space2.engine = space1.engine
 space2.field_count = 10
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has different "field_count" on localhost3313 and
@@ -188,7 +199,7 @@ space2.field_count = space1.field_count
 space2.temporary = true
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has different "temporary" on localhost3313 and localhost3314'
@@ -200,7 +211,7 @@ space2.temporary = space1.temporary
 space2._format[2] = nil
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: format of a space space1 has different field count on localhost3313
@@ -212,7 +223,7 @@ space2._format[2] = table.deepcopy(space1._format[2])
 space2._format[2].name = 'new_name'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: field 2 of a space space1 has different "name" on localhost3313
@@ -224,7 +235,7 @@ space2._format[2].name = space1._format[2].name
 space2._format[2].type = 'scalar'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: field 2 of a space space1 has different "type" on localhost3313
@@ -237,7 +248,7 @@ space2._format[2].type = space1._format[2].type
 space2.index.sk2 = {'sk2'}
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has different index count on localhost3313 and localhost3314'
@@ -249,7 +260,7 @@ space2.index.sk2 = nil
 space1.index.sk2 = {'sk2'}
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk2 on localhost3313 but has no on localhost3314'
@@ -261,7 +272,7 @@ space1.index.sk2 = nil
 space2.index.sk.id = 100
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different "id" on localhost3313
@@ -273,7 +284,7 @@ space2.index.sk.id = space1.index.sk.id
 space2.index.sk.type = 'hash'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different "type" on localhost3313
@@ -285,7 +296,7 @@ space2.index.sk.type = space1.index.sk.type
 space2.index.sk.unique = false
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different "unique" on localhost3313
@@ -297,7 +308,7 @@ space2.index.sk.unique = space1.index.sk.unique
 space2.index.sk.parts[2] = {'part2'}
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different part count on localhost3313
@@ -309,7 +320,7 @@ space2.index.sk.parts[2] = nil
 space2.index.sk.parts[1].type = 'scalar'
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different part 1 - "type" are
@@ -321,13 +332,38 @@ space2.index.sk.parts[1].type = space1.index.sk.parts[1].type
 space2.index.sk.parts[1].fieldno = 100
 ---
 ...
-check_schema(replica_sets)
+build_schema(replica_sets, cfg)
 ---
 file.lua:<line>: Schema
     is inconsistent: space space1 has index sk with different part 1 - "fieldno" are
     different on localhost3313 and localhost3313'
 ...
 space2.index.sk.parts[1].fieldno = space1.index.sk.parts[1].fieldno
+---
+...
+-- Check minimal schema extraction.
+cfg.use_min_schema = true
+---
+...
+replica_sets[1][1].conn.space.space2 = { name = 'space2' }
+---
+...
+s = build_schema(replica_sets, cfg)
+---
+...
+s.space2
+---
+- null
+...
+s.space1.index.pk.name
+---
+- pk
+...
+s.space1.index.sk.name
+---
+- sk
+...
+replica_sets[1][1].conn.space.space2 = nil
 ---
 ...
 test_run:cmd('clear filter')

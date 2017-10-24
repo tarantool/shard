@@ -6,9 +6,9 @@ test_run:wait_fullmesh(servers)
 test_run:cmd('switch master0')
 shard.wait_connection()
 
-shard.demo:auto_increment{'test'}
-shard.demo:auto_increment{'test2'}
-shard.demo:auto_increment{'test3'}
+shard.space.demo:auto_increment{'test'}
+shard.space.demo:auto_increment{'test2'}
+shard.space.demo:auto_increment{'test3'}
 
 box.space.demo:select()
 test_run:cmd("switch master1")

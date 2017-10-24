@@ -27,6 +27,7 @@ local field_types = {
 local epoch_counter = 1
 local self_server = nil
 local request_timeout = nil
+local space_routers = nil
 
 local merger = {}
 local function merge_new(key_parts)
@@ -215,11 +216,6 @@ local function unjoin_server(id)
     return true
 end
 
--- default on join/unjoin event
-local function on_action(self, msg)
-    log.info(msg)
-end
-
 local function cluster_operation(func_name, id, timeout)
     local jlog = {}
     local all_ok = true
@@ -246,7 +242,7 @@ local function cluster_operation(func_name, id, timeout)
                                               "node '%s' applied", func_name,
                                               server.id, server.uri)
                     table.insert(jlog, msg)
-                    shard_obj:on_action(msg)
+                    log.info(msg)
                 end
             end
         end
@@ -295,9 +291,9 @@ local function single_call(space, server, operation, ...)
     end, ...)
 end
 
-local function index_call(space, server, operation, index_no, ...)
+local function index_call(space, index_name, server, operation, ...)
     return space_call(space, server, function(space_obj, ...)
-        local index = space_obj.index[index_no]
+        local index = space_obj.index[index_name]
         return index[operation](index, ...)
     end, ...)
 end
@@ -345,17 +341,12 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(space, index_no, index, limits, key)
+local function mr_select(space, index_name, select_opts, key)
     local results = {}
     local merge_obj = nil
-    if limits == nil then
-        limits = {}
-    end
-    if limits.offset == nil then
-        limits.offset = 0
-    end
-    if limits.limit == nil then
-        limits.limit = 1000
+    select_opts = select_opts or {}
+    if select_opts.limit == nil then
+        select_opts.limit = 1000
     end
     for _, replica_set in ipairs(replica_sets) do
         local server = nil
@@ -368,30 +359,25 @@ local function mr_select(space, index_no, index, limits, key)
         end
         if server ~= nil then
             local buf = buffer.ibuf()
-            limits.buffer = buf
+            select_opts.buffer = buf
             if merge_obj == nil then
-                merge_obj = get_merger(server.conn.space[space], index_no)
+                merge_obj = get_merger(server.conn.space[space], index_name)
             end
-            local part = index_call(space, server, 'select', index_no, index,
-                                    limits)
+            local part = index_call(space, index_name, server, 'select', key, select_opts)
             table.insert(results, buf)
         end
     end
     merge_obj.start(results, -1)
     local tuples = {}
-    local cmp_key = key_create(key or index)
+    local cmp_key = key_create(key)
     while merge_obj.cmp(cmp_key) == 0 do
         local tuple = merge_obj.next()
         table.insert(tuples, tuple)
-        if #tuples >= limits.limit then
+        if #tuples >= select_opts.limit then
             break
         end
     end
     return tuples
-end
-
-local function secondary_select(space, index_no, index, limits, key)
-    return mr_select(space, index_no, index, limits, key)
 end
 
 -- shards request function
@@ -453,40 +439,6 @@ local function extract_key(space_name, data)
     return key_extract[space_name](data)
 end
 
--- default request wrappers for db operations
-local function insert(self, space, data)
-    local tuple_id = extract_key(space, data)
-    return request(space, 'insert', tuple_id, data)
-end
-
-local function auto_increment(self, space, data)
-    local id = next_id(space)
-    table.insert(data, 1, id)
-    return request(space, 'insert', {id}, data)
-end
-
-local function select(self, space, key, args)
-    return request(space, 'select', key, key, args)
-end
-
-local function replace(self, space, data)
-    local tuple_id = extract_key(space, data)
-    return request(space, 'replace', tuple_id, data)
-end
-
-local function delete(self, space, key)
-    return request(space, 'delete', key, key)
-end
-
-local function update(self, space, key, data)
-    return request(space, 'update', key, key, data)
-end
-
--- function to check a connection after it's established
-local function check_connection(conn)
-    return true
-end
-
 local function shard_mapping(servers)
     -- iterate over all zones, and build shards, aka replica set
     -- each replica set has 'redundancy' servers from different
@@ -510,60 +462,66 @@ local function shard_mapping(servers)
     log.info("shard count = %d", replica_sets_n)
 end
 
-local function enable_operations()
-    -- set 1-phase operations
-    shard_obj.insert = insert
-    shard_obj.auto_increment = auto_increment
-    shard_obj.select = select
-    shard_obj.replace = replace
-    shard_obj.update = update
-    shard_obj.delete = delete
+local space_router_methods = {}
+function space_router_methods:insert(tuple)
+    box.internal.check_space_arg(self, 'insert')
+    local tuple_id = extract_key(self.name, tuple)
+    return request(self.name, 'insert', tuple_id, tuple)
+end
 
-    -- set helpers
-    shard_obj.on_action = on_action
+function space_router_methods:replace(tuple)
+    box.internal.check_space_arg(self, 'replace')
+    local tuple_id = extract_key(self.name, tuple)
+    return request(self.name, 'replace', tuple_id, tuple)
+end
 
-    -- enable easy spaces access
-    setmetatable(shard_obj, {
-        __index = function (self, space)
-            return {
-                name = space,
-                auto_increment = function(this, ...)
-                    return self.auto_increment(self, space, ...)
-                end,
-                insert = function(this, ...)
-                    return self.insert(self, space, ...)
-                end,
-                select = function(this, ...)
-                    return self.select(self, space, ...)
-                end,
-                replace = function(this, ...)
-                    return self.replace(self, space, ...)
-                end,
-                delete = function(this, ...)
-                    return self.delete(self, space, ...)
-                end,
-                update = function(this, ...)
-                    return self.update(self, space, ...)
-                end,
+function space_router_methods:auto_increment(key)
+    box.internal.check_space_arg(self, 'auto_increment')
+    local id = next_id(self.name)
+    table.insert(key, 1, id)
+    return request(self.name, 'insert', {id}, key)
+end
 
-                single_call = function(this, ...)
-                    return single_call(space, ...)
-                end,
-                space_call = function(this, ...)
-                    return space_call(space, ...)
-                end,
-                index_call = function(this, ...)
-                    return index_call(space, ...)
-                end,
-                secondary_select = function(this, ...)
-                    return secondary_select(space, ...)
-                end,
-                mr_select = function(this, ...)
-                    return mr_select(space, ...)
-                end
-            }
-        end
-    })
+function space_router_methods:select(key, select_opts)
+    box.internal.check_space_arg(self, 'select')
+    if key == nil or (type(key) == 'table' and #key == 0) then
+        error('Fullscan select is unsupported for sharding')
+    end
+    if select_opts ~= nil and select_opts.iterator ~= 'nil' and
+       select_opts.iterator ~= 'EQ' then
+        error('Iterator type ~= "EQ" is unsupported for sharding')
+    end
+    return request(self.name, 'select', key, key, select_opts)
+end
+
+function space_router_methods:delete(key)
+    box.internal.check_space_arg(self, 'delete')
+    return request(self.name, 'delete', key, key)
+end
+
+function space_router_methods:update(key, op_list)
+    box.internal.check_space_arg(self, 'update')
+    return request(self.name, 'update', key, key, op_list)
+end
+
+function space_router_methods:upsert(tuple, op_list)
+    box.internal.check_space_arg(self, 'upsert')
+    local tuple_id = extract_key(self.name, tuple)
+    request(self.name, 'upsert', tuple_id, tuple, op_list)
+end
+
+function space_router_methods:get(key)
+    box.internal.check_space_arg(self, 'get')
+    return request(self.name, 'get', key, key)
+end
+
+local index_router_methods = {}
+function index_router_methods:select(key, select_opts)
+    box.internal.check_index_arg(self, 'select')
+    if self.id == 0 then
+        return request(self.space_name, 'select', key, key, select_opts)
+    end
+    return mr_select(self.space_name, self.name, select_opts, key)
 end
 
 local function on_server_connected(conn)
@@ -599,11 +557,18 @@ local function init(cfg, callback)
                                       on_server_disconnected)
 
     wait_connection()
-    config_util.check_schema(replica_sets)
-
-    -- servers mappng
-
-    enable_operations()
+    space_routers = config_util.build_schema(replica_sets, cfg)
+    for space_name, space in pairs(space_routers) do
+        if type(space_name) == 'string' then
+            setmetatable(space, { __index = space_router_methods })
+            for idx_name, index in pairs(space.index) do
+                if type(idx_name) == 'string' then
+                    setmetatable(index, { __index = index_router_methods })
+                end
+            end
+        end
+    end
+    shard_obj.space = space_routers
     log.info('Done')
     return true
 end
@@ -645,11 +610,6 @@ shard_obj = {
     server_by_key = server_by_key,
     call = call,
     shard_function = shard_function,
-
-    single_call = single_call,
-    space_call = space_call,
-    mr_select = mr_select,
-    secondary_select = secondary_select,
 }
 
 return shard_obj

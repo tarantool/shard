@@ -6,12 +6,12 @@ test_run:wait_fullmesh(servers)
 test_run:cmd('switch master0')
 shard.wait_connection()
 
-shard.demo:insert{1, 'test'}
-shard.demo:replace{1, 'test2'}
-shard.demo:update({1}, {{'=', 2, 'test3'}})
-shard.demo:insert{2, 'test4'}
-shard.demo:insert{3, 'test5'}
-shard.demo:delete({3})
+shard.space.demo:insert{1, 'test'}
+shard.space.demo:replace{1, 'test2'}
+shard.space.demo:update({1}, {{'=', 2, 'test3'}})
+shard.space.demo:insert{2, 'test4'}
+shard.space.demo:insert{3, 'test5'}
+shard.space.demo:delete({3})
 
 box.space.demo:select()
 test_run:cmd("switch master1")

@@ -1,0 +1,236 @@
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+test_run:cmd("push filter '.*/*.lua.*:[0-9]+: ' to 'file.lua:<line>: '")
+---
+- true
+...
+servers = { 'master0', 'master1', 'master2', 'master3' }
+---
+...
+test_run:create_cluster(servers, 'dml')
+---
+...
+test_run:wait_fullmesh({'master0', 'master1'})
+---
+...
+test_run:wait_fullmesh({'master2', 'master3'})
+---
+...
+test_run:cmd('switch master0')
+---
+- true
+...
+shard.wait_connection()
+---
+...
+-- Index only existing spaces.
+shard.space.demo ~= nil
+---
+- true
+...
+shard.space.demo2 == nil
+---
+- true
+...
+-- Replica set 0.
+shard.space.demo:insert{1, 1, 1}
+---
+- [1, 1, 1]
+...
+shard.space.demo:insert{2, 2, 2}
+---
+- [2, 2, 2]
+...
+shard.space.demo:insert{3, 3, 3}
+---
+- [3, 3, 3]
+...
+-- Replica set 1.
+shard.space.demo:replace{4, 4, 4}
+---
+- [4, 4, 4]
+...
+shard.space.demo:replace{5, 5, 5}
+---
+- [5, 5, 5]
+...
+shard.space.demo:replace{6, 6, 6}
+---
+- [6, 6, 6]
+...
+box.space.demo:select{}
+---
+- - [1, 1, 1]
+  - [2, 2, 2]
+  - [3, 3, 3]
+...
+test_run:cmd('switch master1')
+---
+- true
+...
+box.space.demo:select{}
+---
+- - [1, 1, 1]
+  - [2, 2, 2]
+  - [3, 3, 3]
+...
+test_run:cmd('switch master2')
+---
+- true
+...
+box.space.demo:select{}
+---
+- - [4, 4, 4]
+  - [5, 5, 5]
+  - [6, 6, 6]
+...
+test_run:cmd('switch master3')
+---
+- true
+...
+box.space.demo:select{}
+---
+- - [4, 4, 4]
+  - [5, 5, 5]
+  - [6, 6, 6]
+...
+-- DML on the same replica set.
+shard.space.demo:select{4}
+---
+- - [4, 4, 4]
+...
+shard.space.demo:select({4}, {iterator = 'GE'})
+---
+file.lua:<line>: Iterator
+    type ~= "EQ" is unsupported for sharding'
+...
+shard.space.demo:select{} -- Unsupported.
+---
+file.lua:<line>: Fullscan
+    select is unsupported for sharding'
+...
+shard.space.demo:select() -- Unsupported.
+---
+file.lua:<line>: Fullscan
+    select is unsupported for sharding'
+...
+shard.space.demo:get{5}
+---
+- [5, 5, 5]
+...
+shard.space.demo:delete{6}
+---
+- [6, 6, 6]
+...
+shard.space.demo:get{6}
+---
+- null
+...
+-- DML to another replica set.
+shard.space.demo:select{1}
+---
+- - [1, 1, 1]
+...
+shard.space.demo:get{2}
+---
+- [2, 2, 2]
+...
+shard.space.demo:delete{3}
+---
+- [3, 3, 3]
+...
+shard.space.demo:get{3}
+---
+- null
+...
+test_run:cmd('switch master0')
+---
+- true
+...
+box.space.demo:select{}
+---
+- - [1, 1, 1]
+  - [2, 2, 2]
+...
+-- Duplicate key.
+shard.space.demo:insert{5, 5, 5}
+---
+file.lua:<line>: failed to
+    execute operation on localhost:33132: Duplicate key exists in unique index ''primary''
+    in space ''demo'''
+...
+-- Replace exising tuple.
+shard.space.demo:replace{5, 5, 5, 'replaced'}
+---
+- [5, 5, 5, 'replaced']
+...
+shard.space.demo:select{5}
+---
+- - [5, 5, 5, 'replaced']
+...
+-- Update.
+shard.space.demo:update({5}, {{'=', 4, 'updated'}})
+---
+- [5, 5, 5, 'updated']
+...
+shard.space.demo:update({1}, {{'=', 4, 'updated'}})
+---
+- [1, 1, 1, 'updated']
+...
+shard.space.demo:select{1}
+---
+- - [1, 1, 1, 'updated']
+...
+shard.space.demo:select{5}
+---
+- - [5, 5, 5, 'updated']
+...
+-- Upsert.
+shard.space.demo:upsert({6, 6, 6}, {})
+---
+...
+shard.space.demo:upsert({2, 2, 2, 2}, {{'=', 4, 'upserted'}})
+---
+...
+shard.space.demo:select{6}
+---
+- - [6, 6, 6]
+...
+shard.space.demo:select{2}
+---
+- - [2, 2, 2, 'upserted']
+...
+--
+-- Test indexes.
+--
+shard.space.demo.index.primary ~= nil
+---
+- true
+...
+shard.space.demo.index.secondary ~= nil
+---
+- true
+...
+shard.space.demo.index.secondary:select({1}, {limit = 100})
+---
+- - [1, 1, 1, 'updated']
+...
+shard.space.demo.index.secondary:select({5}, {limit = 100})
+---
+- - [5, 5, 5, 'updated']
+...
+test_run:cmd("switch default")
+---
+- true
+...
+test_run:cmd('clear filter')
+---
+- true
+...
+test_run:drop_cluster(servers)
+---
+...

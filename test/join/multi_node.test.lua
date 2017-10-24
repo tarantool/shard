@@ -8,7 +8,7 @@ test_run:wait_fullmesh({'master2', 'master5'})
 test_run:cmd('switch master0')
 shard.wait_connection()
 
-for i=1, 10 do shard.demo:insert{i, 'test'} end
+for i=1, 10 do shard.space.demo:insert{i, 'test'} end
 
 -- check data
 box.space.demo:select()
@@ -30,7 +30,7 @@ test_run:cmd("switch master0")
 test_run:cmd("stop server master1")
 test_run:cmd("stop server master2")
 -- add tuples
-for i=11, 20 do shard.demo:insert{i, 'join_test'} end
+for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
 status = shard_status()
 
 test_run:cmd("start server master1")
