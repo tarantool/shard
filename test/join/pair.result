@@ -101,7 +101,7 @@ test_run:cmd("stop server master4")
 ---
 - true
 ...
-status = shard_status()
+status = shard.status()
 ---
 ...
 _ = remote_unjoin(status.offline[1].id)
@@ -110,7 +110,7 @@ _ = remote_unjoin(status.offline[1].id)
 _ = remote_unjoin(status.offline[2].id)
 ---
 ...
-status = shard_status()
+status = shard.status()
 ---
 ...
 status
@@ -162,7 +162,7 @@ _ = remote_join(status.offline[2].id)
 _ = remote_join(status.offline[1].id)
 ---
 ...
-shard_status()
+shard.status()
 ---
 - maintenance: []
   offline: []

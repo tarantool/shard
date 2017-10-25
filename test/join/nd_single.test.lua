@@ -32,14 +32,14 @@ test_run:cmd("stop server master1")
 for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
 
 -- join replica
-status = shard_status()
+status = shard.status()
 status
 test_run:cmd("start server master1")
 test_run:wait_fullmesh({'master1', 'master4'})
 
 _ = remote_join(status.offline[1].id)
 test_run:cmd('stop server master2')
-shard_status()
+shard.status()
 
 -- check joined replica
 box.space.demo:select()
@@ -56,13 +56,13 @@ box.space.demo:select()
 test_run:cmd("switch master0")
 
 -- join one more replica
-status = shard_status()
+status = shard.status()
 status
 test_run:cmd("start server master2")
 test_run:wait_fullmesh({'master2', 'master5'})
 
 _ = remote_join(status.offline[1].id)
-shard_status()
+shard.status()
 
 -- check joined replica
 test_run:cmd("switch master2")

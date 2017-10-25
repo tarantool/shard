@@ -594,8 +594,6 @@ _G.remote_join       = remote_join
 _G.remote_unjoin     = remote_unjoin
 
 _G.cluster_operation = cluster_operation
-_G.merge_sort        = merge_sort
-_G.shard_status      = shard_status
 
 shard_obj = {
     RECONNECT_AFTER = RECONNECT_AFTER,
@@ -610,6 +608,7 @@ shard_obj = {
     server_by_key = server_by_key,
     call = call,
     shard_function = shard_function,
+    status = shard_status,
 }
 
 return shard_obj

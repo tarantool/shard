@@ -97,7 +97,7 @@ test_run:cmd("stop server master1")
 ---
 - true
 ...
-status = shard_status()
+status = shard.status()
 ---
 ...
 status
@@ -135,7 +135,7 @@ test_run:wait_fullmesh({'master1', 'master4'})
 _ = remote_join(status.offline[1].id)
 ---
 ...
-shard_status()
+shard.status()
 ---
 - maintenance: []
   offline: []

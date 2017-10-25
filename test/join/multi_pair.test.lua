@@ -31,12 +31,12 @@ test_run:cmd("stop server master1")
 test_run:cmd("stop server master4")
 test_run:cmd("stop server master2")
 test_run:cmd("stop server master5")
-status = shard_status()
+status = shard.status()
 _ = remote_unjoin(status.offline[1].id)
 _ = remote_unjoin(status.offline[2].id)
 _ = remote_unjoin(status.offline[3].id)
 _ = remote_unjoin(status.offline[4].id)
-status = shard_status()
+status = shard.status()
 status
 
 -- add tuples
@@ -57,7 +57,7 @@ _ = remote_join(status.offline[2].id)
 _ = remote_join(status.offline[1].id)
 _ = remote_join(status.offline[4].id)
 _ = remote_join(status.offline[3].id)
-shard_status()
+shard.status()
 shard.space.demo:insert{12, 'test_pair'}
 shard.space.demo:insert{19, 'test_pair'}
 

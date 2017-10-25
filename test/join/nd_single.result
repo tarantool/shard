@@ -102,7 +102,7 @@ for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
 ---
 ...
 -- join replica
-status = shard_status()
+status = shard.status()
 ---
 ...
 status
@@ -139,7 +139,7 @@ test_run:cmd('stop server master2')
 ---
 - true
 ...
-shard_status()
+shard.status()
 ---
 - maintenance:
   - null
@@ -229,7 +229,7 @@ test_run:cmd("switch master0")
 - true
 ...
 -- join one more replica
-status = shard_status()
+status = shard.status()
 ---
 ...
 status
@@ -263,7 +263,7 @@ test_run:wait_fullmesh({'master2', 'master5'})
 _ = remote_join(status.offline[1].id)
 ---
 ...
-shard_status()
+shard.status()
 ---
 - maintenance: []
   offline: []

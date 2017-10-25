@@ -28,7 +28,7 @@ test_run:cmd("switch master0")
 
 -- stop replica
 test_run:cmd("stop server master1")
-status = shard_status()
+status = shard.status()
 status
 -- add tuples
 for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
@@ -37,7 +37,7 @@ for i=11, 20 do shard.space.demo:insert{i, 'join_test'} end
 test_run:cmd("start server master1")
 test_run:wait_fullmesh({'master1', 'master4'})
 _ = remote_join(status.offline[1].id)
-shard_status()
+shard.status()
 
 -- check joined replica
 box.space.demo:select()
