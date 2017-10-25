@@ -62,11 +62,29 @@ shard.space.demo:replace{6, 6, 6}
 ---
 - [6, 6, 6]
 ...
+-- Insert in random order.
+shard.space.demo:replace{100, 200, 300}
+---
+- [100, 200, 300]
+...
+shard.space.demo:replace{50, 300, 400}
+---
+- [50, 300, 400]
+...
+shard.space.demo:replace{150, 100, 500}
+---
+- [150, 100, 500]
+...
+shard.space.demo:replace{25, 400, 600}
+---
+- [25, 400, 600]
+...
 box.space.demo:select{}
 ---
 - - [1, 1, 1]
   - [2, 2, 2]
   - [3, 3, 3]
+  - [150, 100, 500]
 ...
 test_run:cmd('switch master1')
 ---
@@ -77,6 +95,7 @@ box.space.demo:select{}
 - - [1, 1, 1]
   - [2, 2, 2]
   - [3, 3, 3]
+  - [150, 100, 500]
 ...
 test_run:cmd('switch master2')
 ---
@@ -87,6 +106,9 @@ box.space.demo:select{}
 - - [4, 4, 4]
   - [5, 5, 5]
   - [6, 6, 6]
+  - [25, 400, 600]
+  - [50, 300, 400]
+  - [100, 200, 300]
 ...
 test_run:cmd('switch master3')
 ---
@@ -97,6 +119,9 @@ box.space.demo:select{}
 - - [4, 4, 4]
   - [5, 5, 5]
   - [6, 6, 6]
+  - [25, 400, 600]
+  - [50, 300, 400]
+  - [100, 200, 300]
 ...
 -- DML on the same replica set.
 shard.space.demo:select{4}
@@ -105,18 +130,39 @@ shard.space.demo:select{4}
 ...
 shard.space.demo:select({4}, {iterator = 'GE'})
 ---
-file.lua:<line>: Iterator
-    type ~= "EQ" is unsupported for sharding'
+- - [4, 4, 4]
+  - [5, 5, 5]
+  - [6, 6, 6]
+  - [25, 400, 600]
+  - [50, 300, 400]
+  - [100, 200, 300]
+  - [150, 100, 500]
 ...
-shard.space.demo:select{} -- Unsupported.
+shard.space.demo:select{}
 ---
-file.lua:<line>: Fullscan
-    select is unsupported for sharding'
+- - [1, 1, 1]
+  - [2, 2, 2]
+  - [3, 3, 3]
+  - [4, 4, 4]
+  - [5, 5, 5]
+  - [6, 6, 6]
+  - [25, 400, 600]
+  - [50, 300, 400]
+  - [100, 200, 300]
+  - [150, 100, 500]
 ...
-shard.space.demo:select() -- Unsupported.
+shard.space.demo:select()
 ---
-file.lua:<line>: Fullscan
-    select is unsupported for sharding'
+- - [1, 1, 1]
+  - [2, 2, 2]
+  - [3, 3, 3]
+  - [4, 4, 4]
+  - [5, 5, 5]
+  - [6, 6, 6]
+  - [25, 400, 600]
+  - [50, 300, 400]
+  - [100, 200, 300]
+  - [150, 100, 500]
 ...
 shard.space.demo:get{5}
 ---
@@ -155,6 +201,7 @@ box.space.demo:select{}
 ---
 - - [1, 1, 1]
   - [2, 2, 2]
+  - [150, 100, 500]
 ...
 -- Duplicate key.
 shard.space.demo:insert{5, 5, 5}

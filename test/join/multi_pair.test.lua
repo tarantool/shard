@@ -1,5 +1,6 @@
 env = require('test_run')
 test_run = env.new()
+test_run:cmd("push filter '.*/*.lua.*:[0-9]+: ' to 'file.lua:<line>: '")
 servers = { 'master0', 'master1', 'master2', 'master3', 'master4', 'master5' }
 test_run:create_cluster(servers, 'join')
 test_run:wait_fullmesh({'master0', 'master3'})
@@ -40,10 +41,8 @@ status = shard.status()
 status
 
 -- add tuples
-result = shard.space.demo:insert{12, 'test_pair'}
-result
-result = shard.space.demo:insert{19, 'test_pair'}
-result
+shard.space.demo:insert{12, 'test_pair'}
+shard.space.demo:insert{19, 'test_pair'}
 
 -- start servers
 test_run:cmd("switch master0")
@@ -77,3 +76,4 @@ test_run:cmd("switch master5")
 box.space.demo:select()
 test_run:cmd("switch default")
 test_run:drop_cluster(servers)
+test_run:cmd('clear filter')

@@ -5,7 +5,6 @@ local remote = require('net.box')
 local uuid = require('uuid')
 local ffi = require('ffi')
 local buffer = require('buffer')
-local mpffi = require'msgpackffi'
 local config_util = require('shard.config_util')
 
 -- tuple array merge driver
@@ -24,6 +23,27 @@ local field_types = {
     map       = 8,
 }
 
+local iterator_direction = {
+    [box.index.EQ] = 1,
+    [box.index.GT] = 1,
+    [box.index.GE] = 1,
+    [box.index.ALL] = 1,
+
+    [box.index.REQ] = -1,
+    [box.index.LT] = -1,
+    [box.index.LE] = -1,
+}
+
+local iterator_type_from_str = {
+    EQ = box.index.EQ,
+    GT = box.index.GT,
+    GE = box.index.GE,
+    ALL = box.index.ALL,
+    REQ = box.index.REQ,
+    LT = box.index.LT,
+    LE = box.index.LE,
+}
+
 local epoch_counter = 1
 local self_server = nil
 local request_timeout = nil
@@ -32,17 +52,14 @@ local space_routers = nil
 local merger = {}
 local function merge_new(key_parts)
     local parts = {}
-    local part_no = 1
     for _, v in pairs(key_parts) do
         if v.fieldno <= 0 then
             error('Invalid field number')
         end
         if field_types[v.type] ~= nil then
-            parts[part_no] = {
-                fieldno = v.fieldno - 1,
-                type = field_types[v.type]
-            }
-            part_no = part_no + 1
+            table.insert(parts, {
+                fieldno = v.fieldno - 1, type = field_types[v.type]
+            })
         else
             error('Unknow field type: ' .. v.type)
         end
@@ -60,10 +77,6 @@ local function merge_new(key_parts)
             return driver.merge_next(merger)
         end
     }
-end
-
-local function key_create(data)
-    return mpffi.encode(data)
 end
 
 local replica_sets = {}
@@ -216,7 +229,7 @@ local function unjoin_server(id)
     return true
 end
 
-local function cluster_operation(func_name, id, timeout)
+local function cluster_operation(func_name, id)
     local jlog = {}
     local all_ok = true
 
@@ -262,91 +275,42 @@ local function remote_unjoin(id)
     return cluster_operation("unjoin_server", id)
 end
 
--- base remote operation on space
-local function space_call(space, server, fun, ...)
-    local result = nil
-    local status, reason = pcall(function(...)
-        local conn = server.conn
-        local space_obj = conn.space[space]
-        if space_obj == nil then
-            conn:reload_schema()
-            space_obj = conn.space[space]
-        end
-        result = fun(space_obj, ...)
-    end, ...)
-    if not status then
-        local err = string.format(
-            'failed to execute operation on %s: %s',
-            server.uri, reason
-        )
-        error(err)
-    end
-    return result
-end
-
--- primary index wrapper on space_call
-local function single_call(space, server, operation, ...)
-    return space_call(space, server, function(space_obj, ...)
-        return space_obj[operation](space_obj, ...)
-    end, ...)
-end
-
-local function index_call(space, index_name, server, operation, ...)
-    return space_call(space, server, function(space_obj, ...)
-        local index = space_obj.index[index_name]
-        return index[operation](index, ...)
-    end, ...)
-end
-
-local function merge_sort(results, index_fields, limits, cut_index)
-    local result = {}
-    if cut_index == nil then
-        cut_index = {}
-    end
-    -- sort by all key parts
-    table.sort(results, function(a ,b)
-        for i, part in pairs(index_fields) do
-            if a[part.fieldno] ~= b[part.fieldno] then
-                return a[part.fieldno] > b[part.fieldno]
-            end
-        end
-        return false
-    end)
-    for i, tuple in pairs(results) do
-        local insert = true
-        for j, elem in pairs(cut_index) do
-            local part = index_fields[j]
-            insert = insert and tuple[part.fieldno] == elem
-        end
-        if insert then
-            table.insert(result, tuple)
-        end
-
-        -- check limit condition
-        if #result >= limits.limit then
-            break
-        end
-    end
-    return result
-end
-
-local function get_merger(space_obj, index_no)
+local function get_merger(space_obj, index_id)
     if merger[space_obj.name] == nil then
         merger[space_obj.name] = {}
     end
-    if merger[space_obj.name][index_no] == nil then
-        local index = space_obj.index[index_no]
-        merger[space_obj.name][index_no] = merge_new(index.parts)
+    if merger[space_obj.name][index_id] == nil then
+        local index = space_obj.index[index_id]
+        merger[space_obj.name][index_id] = merge_new(index.parts)
     end
-    return merger[space_obj.name][index_no]
+    return merger[space_obj.name][index_id]
 end
 
-local function mr_select(space, index_name, select_opts, key)
+local function server_request(server, operation, netbox_opts, ...)
+    local c = server.conn
+    local ok, ret = pcall(c._request, c, operation, netbox_opts, ...)
+    if not ok then
+        error(string.format('failed to execute operation on %s: %s',
+                            server.uri, ret))
+    end
+    return ret
+end
+
+-- shards request function
+local function request(tuple_id, operation, netbox_opts, ...)
+    local server = server_by_key(tuple_id)
+    if server == nil then
+        error('A requested shard is down')
+    end
+    return server_request(server, operation, netbox_opts, ...)
+end
+
+local function mr_select(space_id, index_id, iterator, offset, limit, key,
+                         netbox_opts)
     local results = {}
     local merge_obj = nil
-    select_opts = select_opts or {}
-    if select_opts.limit == nil then
-        select_opts.limit = 1000
+    if limit == nil then
+        limit = 1000
     end
     for _, replica_set in ipairs(replica_sets) do
         local server = nil
@@ -358,35 +322,25 @@ local function mr_select(space, index_name, select_opts, key)
             end
         end
         if server ~= nil then
-            local buf = buffer.ibuf()
-            select_opts.buffer = buf
+            netbox_opts.buffer = buffer.ibuf()
             if merge_obj == nil then
-                merge_obj = get_merger(server.conn.space[space], index_name)
+                merge_obj = get_merger(server.conn.space[space_id], index_id)
             end
-            local part = index_call(space, index_name, server, 'select', key, select_opts)
-            table.insert(results, buf)
+            -- A response is stored in buf.
+            server_request(server, 'select', netbox_opts, space_id, index_id,
+                           iterator, offset, limit, key)
+            table.insert(results, netbox_opts.buffer)
+            netbox_opts.buffer = nil
         end
     end
-    merge_obj.start(results, -1)
+    merge_obj.start(results, iterator_direction[iterator])
     local tuples = {}
-    local cmp_key = key_create(key)
-    while merge_obj.cmp(cmp_key) == 0 do
-        local tuple = merge_obj.next()
-        table.insert(tuples, tuple)
-        if #tuples >= select_opts.limit then
-            break
-        end
+    local i = 0
+    while i < limit do
+        table.insert(tuples, merge_obj.next())
+        i = i + 1
     end
     return tuples
-end
-
--- shards request function
-local function request(space, operation, tuple_id, ...)
-    local server = server_by_key(tuple_id)
-    if server == nil then
-        return nil
-    end
-    return single_call(space, server, operation, ...)
 end
 
 local function next_id(space)
@@ -463,65 +417,86 @@ local function shard_mapping(servers)
 end
 
 local space_router_methods = {}
-function space_router_methods:insert(tuple)
+function space_router_methods:insert(tuple, netbox_opts)
     box.internal.check_space_arg(self, 'insert')
     local tuple_id = extract_key(self.name, tuple)
-    return request(self.name, 'insert', tuple_id, tuple)
+    return request(tuple_id, 'insert', netbox_opts, self.id, tuple)[1]
 end
 
-function space_router_methods:replace(tuple)
+function space_router_methods:replace(tuple, netbox_opts)
     box.internal.check_space_arg(self, 'replace')
     local tuple_id = extract_key(self.name, tuple)
-    return request(self.name, 'replace', tuple_id, tuple)
+    return request(tuple_id, 'replace', netbox_opts, self.id, tuple)[1]
 end
 
-function space_router_methods:auto_increment(key)
+function space_router_methods:auto_increment(tuple, netbox_opts)
     box.internal.check_space_arg(self, 'auto_increment')
     local id = next_id(self.name)
-    table.insert(key, 1, id)
-    return request(self.name, 'insert', {id}, key)
+    table.insert(tuple, 1, id)
+    return request(id, 'insert', netbox_opts, self.id, tuple)[1]
 end
 
-function space_router_methods:select(key, select_opts)
+function space_router_methods:select(key, select_opts, netbox_opts)
     box.internal.check_space_arg(self, 'select')
-    if key == nil or (type(key) == 'table' and #key == 0) then
-        error('Fullscan select is unsupported for sharding')
-    end
-    if select_opts ~= nil and select_opts.iterator ~= 'nil' and
-       select_opts.iterator ~= 'EQ' then
-        error('Iterator type ~= "EQ" is unsupported for sharding')
-    end
-    return request(self.name, 'select', key, key, select_opts)
+    return self.index[0]:select(key, select_opts, netbox_opts)
 end
 
-function space_router_methods:delete(key)
+function space_router_methods:delete(key, netbox_opts)
     box.internal.check_space_arg(self, 'delete')
-    return request(self.name, 'delete', key, key)
+    local ret = request(key, 'delete', netbox_opts, self.id, 0, key)
+    if ret ~= nil then
+        return ret[1]
+    else
+        return nil
+    end
 end
 
-function space_router_methods:update(key, op_list)
+function space_router_methods:update(key, oplist, netbox_opts)
     box.internal.check_space_arg(self, 'update')
-    return request(self.name, 'update', key, key, op_list)
+    return request(key, 'update', netbox_opts, self.id, 0, key, oplist)[1]
 end
 
-function space_router_methods:upsert(tuple, op_list)
+function space_router_methods:upsert(tuple, oplist, netbox_opts)
     box.internal.check_space_arg(self, 'upsert')
     local tuple_id = extract_key(self.name, tuple)
-    request(self.name, 'upsert', tuple_id, tuple, op_list)
+    request(tuple_id, 'upsert', netbox_opts, self.id, tuple, oplist)
 end
 
-function space_router_methods:get(key)
+function space_router_methods:get(key, netbox_opts)
     box.internal.check_space_arg(self, 'get')
-    return request(self.name, 'get', key, key)
+    local ret = request(key, 'select', netbox_opts, self.id, 0, box.index.EQ,
+                        0, 2, key)
+    if ret[2] ~= nil then box.error(box.error.MORE_THAN_ONE_TUPLE) end
+    return ret[1]
 end
 
 local index_router_methods = {}
-function index_router_methods:select(key, select_opts)
+function index_router_methods:select(key, select_opts, netbox_opts)
     box.internal.check_index_arg(self, 'select')
-    if self.id == 0 then
-        return request(self.space_name, 'select', key, key, select_opts)
+    select_opts = select_opts or {}
+    key = key or {}
+    local key_is_empty = #key == 0
+    local iter = select_opts.iterator
+    if iter == nil then
+        if key_is_empty then
+            iter = box.index.ALL
+        else
+            iter = box.index.EQ
+        end
+    elseif type(iter) == 'string' then
+        iter = iterator_type_from_str[iter]
+        if iter == nil then
+            error('Unknow iterator type')
+        end
     end
-    return mr_select(self.space_name, self.name, select_opts, key)
+    if self.id == 0 and not key_is_empty and
+       (iter == box.index.EQ or iter == box.index.REQ) then
+        return request(key, 'select', netbox_opts, self.space_id, 0,
+                       box.index.EQ, 0, 0xFFFFFFFF, key)
+    end
+    netbox_opts = netbox_opts or {}
+    return mr_select(self.space_id, self.id, iter, select_opts.offset,
+                     select_opts.limit, key, netbox_opts)
 end
 
 local function on_server_connected(conn)

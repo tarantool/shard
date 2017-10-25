@@ -4,6 +4,10 @@ env = require('test_run')
 test_run = env.new()
 ---
 ...
+test_run:cmd("push filter '.*/*.lua.*:[0-9]+: ' to 'file.lua:<line>: '")
+---
+- true
+...
 servers = { 'master0', 'master1', 'master2', 'master3', 'master4', 'master5' }
 ---
 ...
@@ -137,12 +141,10 @@ status
     id: 6
 ...
 -- add tuples
-result = shard.space.demo:insert{12, 'test_pair'}
+shard.space.demo:insert{12, 'test_pair'}
 ---
-...
-result
----
-- null
+file.lua:<line>: A requested
+    shard is down'
 ...
 -- start servers
 test_run:cmd("start server master1 with wait=False, wait_load=False")
@@ -251,4 +253,8 @@ test_run:cmd("switch default")
 ...
 test_run:drop_cluster(servers)
 ---
+...
+test_run:cmd('clear filter')
+---
+- true
 ...

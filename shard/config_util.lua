@@ -151,7 +151,7 @@ local function build_indexes(space)
     local index_routers = {}
     for name, index in pairs(space.index) do
         if type(name) == 'string' then
-            local router = { name = name, id = index.id, space_name = space.name }
+            local router = { name = name, id = index.id, space_id = space.id }
             index_routers[name] = router
             index_routers[index.id] = router
         end

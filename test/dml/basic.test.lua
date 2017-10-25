@@ -21,6 +21,11 @@ shard.space.demo:insert{3, 3, 3}
 shard.space.demo:replace{4, 4, 4}
 shard.space.demo:replace{5, 5, 5}
 shard.space.demo:replace{6, 6, 6}
+-- Insert in random order.
+shard.space.demo:replace{100, 200, 300}
+shard.space.demo:replace{50, 300, 400}
+shard.space.demo:replace{150, 100, 500}
+shard.space.demo:replace{25, 400, 600}
 
 box.space.demo:select{}
 test_run:cmd('switch master1')
@@ -33,8 +38,8 @@ box.space.demo:select{}
 -- DML on the same replica set.
 shard.space.demo:select{4}
 shard.space.demo:select({4}, {iterator = 'GE'})
-shard.space.demo:select{} -- Unsupported.
-shard.space.demo:select() -- Unsupported.
+shard.space.demo:select{}
+shard.space.demo:select()
 shard.space.demo:get{5}
 shard.space.demo:delete{6}
 shard.space.demo:get{6}
