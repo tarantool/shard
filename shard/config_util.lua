@@ -1,10 +1,10 @@
-remote = require('net.box')
+log = require('log')
+local urilib = require('uri')
 
 --
 -- Check sharding configuration on basic options.
 --
 local function check_cfg(template, default, cfg)
-    cfg = table.deepcopy(cfg)
     -- Set default options.
     for k, v in pairs(default) do
         if cfg[k] == nil then
@@ -23,7 +23,6 @@ local function check_cfg(template, default, cfg)
                   template[k])
         end
     end
-    return cfg
 end
 
 --
@@ -31,14 +30,16 @@ end
 --
 local cfg_server_template = {
     uri = 'string',
-    replica_set = 'string',
+    replica_set = function(value)
+        return type(value) == 'string' or type(value) == 'number'
+    end,
 }
 
 --
 -- Template of a sharding configuration.
 --
 local cfg_template = {
-    servers = function(value)
+    sharding = function(value)
         if type(value) ~= 'table' then
             error('Option "servers" must be table')
         end
@@ -46,33 +47,28 @@ local cfg_template = {
             if type(server) ~= 'table' then
                 error('Each server must be table')
             end
+            if server.uri == nil then
+                server.uri = server[1]
+                server[1] = nil
+            end
+            if server.replica_set == nil then
+                server.replica_set = server[2]
+                server[2] = nil
+            end
             check_cfg(cfg_server_template, {}, server)
         end
     end,
-    login = 'string',
-    password = 'string',
-    monitor = 'boolean',
-    pool_name = 'string',
-    redundancy = 'number',
-    rsd_max_rps = 'number',
-    binary = 'number',
-    reconnect_after = 'number',
-    request_timeout = 'number',
-    use_min_schema = 'boolean',
+    sharding_redundancy = 'number',
+    sharding_timeout = 'number',
 }
 
 --
 -- Default values for several sharding options.
 --
 local cfg_default = {
-    servers = {},
-    monitor = true,
-    pool_name = 'sharding_pool',
-    redundancy = 2,
-    rsd_max_rps = 1000,
-    reconnect_after = 1,
-    request_timeout = 0.3,
-    use_min_schema = false,
+    sharding = {},
+    sharding_redundancy = 2,
+    sharding_timeout = 0.3,
 }
 
 --
@@ -148,15 +144,17 @@ local function check_indexes_are_equal(index1, uri1, index2, uri2, name)
 end
 
 local function build_indexes(space)
-    local index_routers = {}
-    for name, index in pairs(space.index) do
-        if type(name) == 'string' then
-            local router = { name = name, id = index.id, space_id = space.id }
-            index_routers[name] = router
-            index_routers[index.id] = router
+    local indexes = {}
+    -- Iterate over identifiers.
+    for id, index in pairs(space.index) do
+        if type(id) == 'number' then
+            local sharded_index = { name = index.name, id = id,
+                                    space_id = space.id, parts = index.parts }
+            indexes[index.name] = sharded_index
+            indexes[id] = sharded_index
         end
     end
-    return index_routers
+    return indexes
 end
 
 local function check_spaces_are_equal(space1, uri1, space2, uri2)
@@ -174,106 +172,156 @@ local function check_spaces_are_equal(space1, uri1, space2, uri2)
     check_space_formats_are_equal(space1._format, uri1, space2._format, uri2,
                                   space1.name)
     local space_index_count1 = 0
-    for name, index1 in pairs(space1.index) do
-        space_index_count1 = space_index_count1 + 1
-        -- Do not validate the same index twice. Use only its
-        -- name, not id.
-        if type(name) == 'string' then
-            local index2 = space2.index[name]
+    -- Iterate over identifiers.
+    for id, index1 in pairs(space1.index) do
+        if type(id) == 'number' then
+            space_index_count1 = space_index_count1 + 1
+            local index2 = space2.index[id]
             if index2 == nil then
-                error(string.format(err_no_index, space1.name, name, uri1, uri2))
+                error(string.format(err_no_index, space1.name, index1.name,
+                                    uri1, uri2))
             end
             check_indexes_are_equal(index1, uri1, index2, uri1, space1.name)
         end
     end
     local space_index_count2 = 0
-    for name, index2 in pairs(space2.index) do
-        space_index_count2 = space_index_count2 + 1
+    for id, index2 in pairs(space2.index) do
+        if type(id) == 'number' then
+            space_index_count2 = space_index_count2 + 1
+        end
     end
     if space_index_count1 ~= space_index_count2 then
         error(string.format(err_index_count, space1.name, uri1, uri2))
     end
 end
 
-local function build_schema(replica_sets, cfg)
-    local space_routers = {}
+local function check_schema(replica_sets, cfg)
     -- The algorithm is to get a one server from each replica set
     -- because on other servers the schema is the same.
-    local server1 = replica_sets[1][1]
-    if #replica_sets == 1 then
-        for name, space in pairs(server1.conn.space) do
-            if type(name) == 'string' then
-                local router = { name = name, id = space.id,
-                                 index = build_indexes(space) }
-                space_routers[name] = router
-                space_routers[space.id] = router
-            end
-        end
-        return space_routers
-    end
+    local server1 = replica_sets[1].master
     for i = 2, #replica_sets do
-        local server2 = replica_sets[i][1]
+        local server2 = replica_sets[i].master
+        assert(server2 ~= nil)
         local space_count1 = 0
-        for name, space1 in pairs(server1.conn.space) do
-            space_count1 = space_count1 + 1
-            -- Do not validate the same space twice. Use only its
-            -- name, not id.
-            if type(name) == 'string' then
-                local space2 = server2.conn.space[name]
+        -- Iterate over identifiers.
+        for id, space1 in pairs(server1.conn.space) do
+            if type(id) == 'number' then
+                space_count1 = space_count1 + 1
+                local space2 = server2.conn.space[id]
                 if space2 == nil then
-                    if not cfg.use_min_schema then
-                        error(string.format(err_no_space, server1.uri, name,
-                                            server2.uri))
-                    end
+                    error(string.format(err_no_space, server1.uri, space1.name,
+                                        server2.uri))
                 else
                     check_spaces_are_equal(space1, server1.uri, space2,
                                            server2.uri)
-                    local router = { name = name, id = space1.id,
-                                     index = build_indexes(space1) }
-                    space_routers[name] = router
-                    space_routers[space1.id] = router
                 end
             end
         end
         local space_count2 = 0
-        for name, space2 in pairs(server2.conn.space) do
-            space_count2 = space_count2 + 1
+        for id, space2 in pairs(server2.conn.space) do
+            if type(id) == 'number' then
+                space_count2 = space_count2 + 1
+            end
         end
-        if space_count1 ~= space_count2 and not cfg.use_min_schema then
+        if space_count1 ~= space_count2 then
             error(string.format(err_space_count, server1.uri, server2.uri))
         end
     end
-    return space_routers
 end
 
-local function connect(replica_sets, cfg, on_connect, on_disconnect)
-    local self_server = nil
-    local base_uri = ''
-    if cfg.password == '' then
-        base_uri = string.format('%s@', cfg.login)
-    else
-        base_uri = string.format('%s:%s@', cfg.login, cfg.password)
-    end
-    base_uri = base_uri..'%s'
+local function build_schema(replica_sets, cfg)
+    local spaces = {}
+    -- The algorithm is to get a one server from each replica set
+    -- because on other servers the schema is the same.
     for _, replica_set in ipairs(replica_sets) do
-        for _, server in ipairs(replica_set) do
-            local uri = string.format(base_uri, server.uri)
-            server.conn =
-                remote:connect(uri, { reconnect_after = cfg.reconnect_after })
-            server.conn.id = server.id
-            if server.conn:eval("return box.info.server.uuid") ==
-               box.info.server.uuid then
-                self_server = server
+        local server = replica_set.master
+        assert(server ~= nil)
+        -- Iterate over identifiers.
+        for id, space in pairs(server.conn.space) do
+            if type(id) == 'number' then
+                local sharded_space = { name = space.name, id = id,
+                                        index = build_indexes(space) }
+                spaces[space.name] = sharded_space
+                spaces[id] = sharded_space
             end
-            server.conn:on_connect(on_connect)
-            server.conn:on_disconnect(on_disconnect)
         end
     end
-    return self_server
+    return spaces
+end
+
+local function map_replica_sets(servers)
+    local replica_sets_n = 0
+    local replica_set_to_i = {}
+    local replica_sets = {}
+    for _, server in ipairs(servers) do
+        local replica_set_i = replica_set_to_i[server.replica_set]
+        if replica_set_i == nil then
+            replica_sets_n = replica_sets_n + 1
+            replica_set_i = replica_sets_n
+            replica_set_to_i[server.replica_set] = replica_set_i
+            replica_sets[replica_set_i] = { id = replica_set_i }
+        end
+        log.info('Adding %s to replica set %d', server.uri, replica_set_i)
+        table.insert(replica_sets[replica_set_i], server)
+    end
+    log.info("Replica sets count = %d", replica_sets_n)
+    return replica_sets
+end
+
+local function purge_password_from_uri(uri)
+    local parsed = urilib.parse(uri)
+    if parsed ~= nil and parsed.password ~= nil then
+        return urilib.format(parsed, false)
+    end
+    return uri
+end
+
+local function serialize_server(server)
+    -- Do not print access_uri - it contains password.
+    return {
+        uri = server.uri,
+        replica_set = server.replica_set
+    }
+end
+
+local function build_replica_sets(cfg)
+    local replica_sets = map_replica_sets(cfg.sharding)
+
+    -- Check that a requested redundancy is <= than real one.
+    local min_redundancy = 999999999
+    for _, replica_set in ipairs(replica_sets) do
+        if min_redundancy > #replica_set then
+            min_redundancy = #replica_set
+        end
+    end
+    if min_redundancy < cfg.sharding_redundancy then
+        local msg = string.format('Minimal redundancy found %s, but specified %s',
+                                  min_redundancy, cfg.sharding_redundancy)
+        log.error(msg)
+        error(msg)
+    end
+    log.info("Redundancy = %d", min_redundancy)
+
+    for _, replica_set in ipairs(replica_sets) do
+        for _, server in ipairs(replica_set) do
+            server.access_uri = server.uri
+            -- Create an uri with no password to print it in
+            -- statistics.
+            server.uri = purge_password_from_uri(server.uri)
+            setmetatable(server, { __serialize = serialize_server })
+        end
+    end
+
+    return replica_sets
 end
 
 return {
+    build_config = function(cfg)
+        cfg = table.deepcopy(cfg)
+        check_cfg(cfg_template, cfg_default, cfg)
+        return cfg
+    end,
+    check_schema = check_schema,
     build_schema = build_schema,
-    check_cfg = function(cfg) return check_cfg(cfg_template, cfg_default, cfg) end,
-    connect = connect,
+    build_replica_sets = build_replica_sets,
 }

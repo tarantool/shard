@@ -8,9 +8,9 @@ local function instance_uri(instance_id)
     return "localhost:"..instance_port(instance_id)
 end
 
-local function create_replica_user(cfg)
-	box.schema.user.create(cfg.login, { password = cfg.password, if_not_exists = true })
-	box.schema.user.grant(cfg.login, 'read,write,execute', 'universe', nil, {if_not_exists=true})
+local function create_replica_user(login, password)
+	box.schema.user.create(login, { password = password, if_not_exists = true })
+	box.schema.user.grant(login, 'read,write,execute', 'universe', nil, {if_not_exists=true})
 	box.schema.user.grant('guest', 'read,write,execute', 'universe', nil, {if_not_exists=true})
 end
 

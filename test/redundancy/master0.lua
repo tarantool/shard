@@ -2,12 +2,15 @@
 util = require('util')
 
 require('console').listen(require('os').getenv('ADMIN'))
+require('log').warn(util.INSTANCE_ID)
 
 local replication
-if util.INSTANCE_ID == 0 or util.INSTANCE_ID == 1 then
-    replication = {util.instance_uri(0), util.instance_uri(1)}
+if util.INSTANCE_ID == 0 then
+	replication = nil
+elseif util.INSTANCE_ID <= 2 then
+	replication = {util.instance_uri(1), util.instance_uri(2)}
 else
-    replication = {util.instance_uri(2), util.instance_uri(3)}
+	replication = {util.instance_uri(3), util.instance_uri(4), util.instance_uri(5)}
 end
 
 box.cfg {

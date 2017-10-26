@@ -10,4 +10,5 @@ target_link_libraries(driver ${MSGPUCK_LIBRARIES})
 # Install module
 install(FILES init.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR}/shard)
 install(FILES config_util.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR}/shard)
+install(FILES dml.lua DESTINATION ${TARANTOOL_INSTALL_LUADIR}/shard)
 install(TARGETS driver LIBRARY DESTINATION ${TARANTOOL_INSTALL_LIBDIR}/shard)
