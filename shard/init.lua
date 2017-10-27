@@ -1882,6 +1882,7 @@ shard_obj = {
     init = init,
     shard = shard,
     pool = pool,
+    set_rsd = set_rsd,
     check_shard = check_shard,
     enable_resharding = function(self)
         fiber.create(resharding_worker, self)
