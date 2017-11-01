@@ -917,7 +917,7 @@ end
 local function space_call(self, space_name, server, fun, ...)
     local result = nil
     local status, reason = pcall(function(...)
-        local conn = server.conn
+        local conn = server.conn:timeout(5 * REMOTE_TIMEOUT)
         local space_obj = conn.space[space_name]
         if space_obj == nil then
             conn:reload_schema()
@@ -997,8 +997,7 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(self, space_name, nodes, index_id, limits, key,
-        sort_index_id)
+local function mr_select(self, space_name, nodes, index_id, limits, key)
     local results = {}
     local sort_index_id = sort_index_id or index_id
     local merge_obj = nil
@@ -1008,7 +1007,7 @@ local function mr_select(self, space_name, nodes, index_id, limits, key,
         local j = #node
         local srd = node[j]
         if merge_obj == nil then
-            merge_obj = get_merger(srd.conn.space[space_name], sort_index_id)
+            merge_obj = get_merger(srd.conn.space[space_name], index_id)
         end
         local buf = buffer.ibuf()
         limits.buffer = buf
@@ -1034,10 +1033,8 @@ local function mr_select(self, space_name, nodes, index_id, limits, key,
     return tuples
 end
 
-local function secondary_select(self, space_name, index_id, limits, key,
-        sort_index_id)
-    return mr_select(self, space_name, shards, index_id, limits, key,
-        sort_index_id)
+local function secondary_select(self, space_name, index_id, limits, key)
+    return mr_select(self, space_name, shards, index_id, limits, key)
 end
 
 local function direct_call(self, server, func_name, ...)
