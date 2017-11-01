@@ -910,14 +910,14 @@ local function remote_append(servers)
 end
 
 -- base remote operation on space
-local function space_call(self, space, server, fun, ...)
+local function space_call(self, space_name, server, fun, ...)
     local result = nil
     local status, reason = pcall(function(...)
         local conn = server.conn:timeout(5 * REMOTE_TIMEOUT)
-        local space_obj = conn.space[space]
+        local space_obj = conn.space[space_name]
         if space_obj == nil then
             conn:reload_schema()
-            space_obj = conn.space[space]
+            space_obj = conn.space[space_name]
         end
         result = fun(space_obj, ...)
     end, ...)
@@ -936,15 +936,15 @@ local function space_call(self, space, server, fun, ...)
 end
 
 -- primary index wrapper on space_call
-local function single_call(self, space, server, operation, ...)
-    return self:space_call(space, server, function(space_obj, ...)
+local function single_call(self, space_name, server, operation, ...)
+    return self:space_call(space_name, server, function(space_obj, ...)
         return space_obj[operation](space_obj, ...)
     end, ...)
 end
 
-local function index_call(self, space, server, operation,
+local function index_call(self, space_name, server, operation,
                           index_no, ...)
-    return self:space_call(space, server, function(space_obj, ...)
+    return self:space_call(space_name, server, function(space_obj, ...)
         local index = space_obj.index[index_no]
         return index[operation](index, ...)
     end, ...)
@@ -993,61 +993,43 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(self, space, nodes, index_no,
-                        index, limits, key)
+local function mr_select(self, space_name, nodes, index_id, limits, key)
     local results = {}
     local merge_obj = nil
-    if limits == nil then
-        limits = {}
-    end
-    if limits.offset == nil then
-        limits.offset = 0
-    end
-    if limits.limit == nil then
-        limits.limit = 1000
-    end
+    limits       = limits       or {}
+    limits.limit = limits.limit or 1000
     for _, node in pairs(nodes) do
         local j = #node
         local srd = node[j]
+        if merge_obj == nil then
+            merge_obj = get_merger(srd.conn.space[space_name], index_id)
+        end
         local buf = buffer.ibuf()
         limits.buffer = buf
-        if merge_obj == nil then
-            merge_obj = get_merger(srd.conn.space[space], index_no)
-        end
-        local part = index_call(
-            self, space, srd, 'select',
-            index_no, index, limits
-        )
-
+        local part = index_call(self, space_name, srd, 'select', index_id, key,
+                                limits)
         while part == nil and j >= 0 do
             j = j - 1
             srd = node[j]
-            part = index_call(
-                self, space, srd, 'select',
-                index_no, index, limits
-            )
+            part = index_call(self, space_name, srd, 'select', index_id, key,
+                              limits)
         end
         table.insert(results, buf)
     end
-    merge_obj.start(results, -1)
+    merge_obj.start(results, 1)
     local tuples = {}
-    local cmp_key = key_create(key or index)
-    while merge_obj.cmp(cmp_key) == 0 do
+    while #tuples < limits.limit do
         local tuple = merge_obj.next()
-        table.insert(tuples, tuple)
-        if #tuples >= limits.limit then
+        if tuple == nil then
             break
         end
+        table.insert(tuples, tuple)
     end
     return tuples
 end
 
-local function secondary_select(self, space, index_no,
-                                index, limits, key)
-    return mr_select(
-        self, space, shards, index_no,
-        index, limits, key
-    )
+local function secondary_select(self, space_name, index_id, limits, key)
+    return mr_select(self, space_name, shards, index_id, limits, key)
 end
 
 local function direct_call(self, server, func_name, ...)
