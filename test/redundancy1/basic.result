@@ -47,9 +47,56 @@ shard.demo:delete({3})
 ---
 - - [3, 'test5']
 ...
+shard.demo2:replace{1, 2, 10}
+---
+- - [1, 2, 10]
+...
+shard.demo2:replace{2, 2, 20}
+---
+- - [2, 2, 20]
+...
+shard.demo2:replace{3, 2, 30}
+---
+- - [3, 2, 30]
+...
+shard.demo2:replace{4, 2, 40}
+---
+- - [4, 2, 40]
+...
+shard.demo2:replace{5, 2, 50}
+---
+- - [5, 2, 50]
+...
+shard.demo2:replace{6, 2, 60}
+---
+- - [6, 2, 60]
+...
+shard.demo2:replace{7, 2, 70}
+---
+- - [7, 2, 70]
+...
+shard.demo2:replace{8, 2, 80}
+---
+- - [8, 2, 80]
+...
+shard.demo2:replace{9, 2, 90}
+---
+- - [9, 2, 90]
+...
+shard.demo2:replace{10, 2, 100}
+---
+- - [10, 2, 100]
+...
 box.space.demo:select()
 ---
 - []
+...
+box.space.demo2:select()
+---
+- - [3, 2, 30]
+  - [6, 2, 60]
+  - [9, 2, 90]
+  - [10, 2, 100]
 ...
 test_run:cmd("switch master1")
 ---
@@ -58,6 +105,11 @@ test_run:cmd("switch master1")
 box.space.demo:select()
 ---
 - []
+...
+box.space.demo2:select()
+---
+- - [4, 2, 40]
+  - [5, 2, 50]
 ...
 test_run:cmd("switch master2")
 ---
@@ -68,9 +120,41 @@ box.space.demo:select()
 - - [1, 'test3']
   - [2, 'test4']
 ...
+box.space.demo2:select()
+---
+- - [1, 2, 10]
+  - [2, 2, 20]
+  - [7, 2, 70]
+  - [8, 2, 80]
+...
 test_run:cmd("switch default")
 ---
 - true
+...
+shard.demo2:secondary_select(1, {}, {2})
+---
+- - [1, 2, 10]
+  - [2, 2, 20]
+  - [3, 2, 30]
+  - [4, 2, 40]
+  - [5, 2, 50]
+  - [6, 2, 60]
+  - [7, 2, 70]
+  - [8, 2, 80]
+  - [9, 2, 90]
+  - [10, 2, 100]
+...
+shard.demo2:secondary_select(1, {}, {2, 10})
+---
+- - [1, 2, 10]
+...
+shard.demo2:secondary_select(1, {}, {2, 200})
+---
+- []
+...
+shard.demo2:secondary_select(1, {limit = 3}, {2, 80})
+---
+- - [8, 2, 80]
 ...
 _ = test_run:cmd("stop server master1")
 ---

@@ -30,6 +30,9 @@ if not box.space.demo then
 	
     local demo = box.schema.create_space('demo')
     demo:create_index('primary', {type = 'tree', parts = {1, 'num'}})
+    local demo2 = box.schema.create_space('demo2')
+    demo2:create_index('pk')
+    demo2:create_index('sk', {parts = {2, 'unsigned', 3, 'unsigned'}})
 end
 
 function print_shard_map()
