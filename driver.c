@@ -129,7 +129,7 @@ lbox_merger_start(struct lua_State *L)
 
 	merger->capacity = 8;
 	merger->sources = (struct source **)malloc(merger->capacity *
-						   sizeof(struct source));
+						   sizeof(struct source *));
 	if (merger->sources == NULL)
 		return luaL_error(L, "Can't alloc sources buffer");
 	/* Fetch all sources */
@@ -156,7 +156,7 @@ lbox_merger_start(struct lua_State *L)
 			merger->sources = new_sources;
 		}
 		merger->sources[merger->count] =
-			(struct source *)malloc(sizeof(struct source *));
+			(struct source *)malloc(sizeof(struct source));
 		if (merger->sources[merger->count] == NULL) {
 			free_sources(merger);
 			return luaL_error(L, "Can't alloc merge source");
