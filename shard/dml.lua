@@ -1,19 +1,6 @@
 local ffi = require('ffi')
-local driver = require('shard.driver')
 local buffer = require('buffer')
-
--- field type map
-local field_types = {
-    any       = 0,
-    unsigned  = 1,
-    string    = 2,
-    number    = 3,
-    integer   = 4,
-    boolean   = 5,
-    scalar    = 6,
-    array     = 7,
-    map       = 8,
-}
+local merge = require('shard.merge')
 
 local iterator_direction = {
     [box.index.EQ] = 1,
@@ -36,35 +23,6 @@ local iterator_type_from_str = {
     LE = box.index.LE,
 }
 
-local function merge_new(key_parts)
-    local parts = {}
-    for _, v in pairs(key_parts) do
-        if v.fieldno <= 0 then
-            error('Invalid field number')
-        end
-        if field_types[v.type] ~= nil then
-            table.insert(parts, {
-                fieldno = v.fieldno - 1, type = field_types[v.type]
-            })
-        else
-            error('Unknow field type: ' .. v.type)
-        end
-    end
-    local merger = driver.merge_new(parts)
-    ffi.gc(merger, driver.merge_del)
-    return {
-        start = function (sources, order)
-            return driver.merge_start(merger, sources, order)
-        end,
-        cmp = function (key)
-            return driver.merge_cmp(merger, key)
-        end,
-        next = function ()
-            return driver.merge_next(merger)
-        end
-    }
-end
-
 local function server_request(server, operation, netbox_opts, ...)
     local c = server.conn
     local ok, ret = pcall(c._request, c, operation, netbox_opts, ...)
@@ -83,7 +41,7 @@ local function dml_module_cfg(shard_module)
         end
         if merger[space_obj.name][index_id] == nil then
             local index = space_obj.index[index_id]
-            merger[space_obj.name][index_id] = merge_new(index.parts)
+            merger[space_obj.name][index_id] = merge.new(index.parts)
         end
         return merger[space_obj.name][index_id]
     end
@@ -104,6 +62,7 @@ local function dml_module_cfg(shard_module)
         if limit == nil then
             limit = 1000
         end
+	print('geparon')
         for _, replica_set in ipairs(shard_module.replica_sets) do
             local server = replica_set.master
             if server ~= nil then
@@ -119,15 +78,17 @@ local function dml_module_cfg(shard_module)
                 netbox_opts.buffer = nil
             end
         end
-        merge_obj.start(results, iterator_direction[iterator])
+	print('hexagon')
+        merge_obj:start(results, iterator_direction[iterator])
         local tuples = {}
         while #tuples < limit do
-            local tuple = merge_obj.next()
+            local tuple = merge_obj:next()
             if tuple == nil then
                 break
             end
             table.insert(tuples, tuple)
         end
+	print('rectalon')
         return tuples
     end
 
