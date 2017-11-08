@@ -1004,11 +1004,11 @@ local function mr_select(self, space, nodes, index_no,
         end
         table.insert(results, buf)
     end
-    merge_obj.start(results, 1)
+    merge_obj:start(results, 1)
     local tuples = {}
     local cmp_key = key_create(key or index)
-    while merge_obj.cmp(cmp_key) == 0 do
-        local tuple = merge_obj.next()
+    while merge_obj:cmp(cmp_key) == 0 do
+        local tuple = merge_obj:next()
         table.insert(tuples, tuple)
         if #tuples >= limits.limit then
             break
