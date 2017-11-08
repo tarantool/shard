@@ -10,20 +10,7 @@ local lib_pool = require('shard.connpool')
 local ffi = require('ffi')
 local buffer = require('buffer')
 local mpffi = require'msgpackffi'
-
--- tuple array merge driver
-local driver = require('shard.driver')
-
--- field type map
-local field_types = {
-    any       = 0,
-    unsigned  = 1,
-    string    = 2,
-    array     = 3,
-    number    = 4,
-    integer   = 5,
-    scala     = 5
-}
+local merge = require'shard.merge'
 
 local merger = {}
 local function merge_new(key_parts)
@@ -43,19 +30,7 @@ local function merge_new(key_parts)
             error('Unknow field type: ' .. v.type)
         end
     end
-    local merger = driver.merge_new(parts)
-    ffi.gc(merger, driver.merge_del)
-    return {
-        start = function (sources, order)
-            return driver.merge_start(merger, sources, order)
-        end,
-        cmp = function (key)
-            return driver.merge_cmp(merger, key)
-        end,
-        next = function ()
-            return driver.merge_next(merger)
-        end
-    }
+    return merge.new(parts)
 end
 
 local function key_create(data)
@@ -1029,7 +1004,7 @@ local function mr_select(self, space, nodes, index_no,
         end
         table.insert(results, buf)
     end
-    merge_obj.start(results, -1)
+    merge_obj.start(results, 1)
     local tuples = {}
     local cmp_key = key_create(key or index)
     while merge_obj.cmp(cmp_key) == 0 do
