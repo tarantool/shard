@@ -60,11 +60,11 @@ local function pop(heap, item)
     if heap.data_len > 1 then
         heap.data[1] = heap.data[heap.data_len]
         heap.data[heap.data_len] = nil
-	heap.data_len = heap.data_len - 1
+        heap.data_len = heap.data_len - 1
         down(heap, 1)
     else
         heap.data[1] = nil
-	heap.data_len = 0
+        heap.data_len = 0
     end
     return res
 end
@@ -83,7 +83,6 @@ end
 
 local function start(heap)
     for i = math.floor(heap.data_len / 2), 1, -1 do
-    print(i)
         down(heap, i)
     end
 end
@@ -99,14 +98,14 @@ end
 local function new(compare)
     local res = {
         data = {},
-	data_len = 0,
+        data_len = 0,
         cmp = compare,
         push = push,
         pop = pop,
-	top = top,
-	insert = insert,
-	start = start,
-	replace = replace}
+        top = top,
+        insert = insert,
+        start = start,
+        replace = replace}
     return res
 end
 
