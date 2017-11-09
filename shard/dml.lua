@@ -62,7 +62,6 @@ local function dml_module_cfg(shard_module)
         if limit == nil then
             limit = 1000
         end
-	print('geparon')
         for _, replica_set in ipairs(shard_module.replica_sets) do
             local server = replica_set.master
             if server ~= nil then
@@ -78,7 +77,6 @@ local function dml_module_cfg(shard_module)
                 netbox_opts.buffer = nil
             end
         end
-	print('hexagon')
         merge_obj:start(results, iterator_direction[iterator])
         local tuples = {}
         while #tuples < limit do
@@ -88,7 +86,6 @@ local function dml_module_cfg(shard_module)
             end
             table.insert(tuples, tuple)
         end
-	print('rectalon')
         return tuples
     end
 

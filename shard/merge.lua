@@ -22,10 +22,13 @@ box_tuple_format_unref(box_tuple_format_t *format);
 typedef struct tuple box_tuple_t;
 int
 box_tuple_compare(const box_tuple_t *tuple_a, const box_tuple_t *tuple_b,
-		  const box_key_def_t *key_def);
+                  const box_key_def_t *key_def);
 int
 box_tuple_compare_with_key(const box_tuple_t *tuple_a, const char *key_b,
-			   const box_key_def_t *key_def);
+                           const box_key_def_t *key_def);
+
+box_tuple_t *
+box_tuple_new(box_tuple_format_t *format, const char *data, const char *end);
 
 ]]
 
@@ -63,7 +66,7 @@ local function decode_iproto_header(source)
     source.rpos = source.rpos + 1
     local arr_size = pickle.unpack(arr_id == 0xdc and 'n' or 'N',
                                    ffi.string(source.rpos,
-				              arr_id == 0xdc and 2 or 4))
+                                              arr_id == 0xdc and 2 or 4))
     source.rpos = source.rpos + (arr_id == 0xdc and 2 or 4)
     assert(source.rpos <= source.wpos)
     return arr_size
@@ -93,8 +96,8 @@ local function merge_start(merge, sources, order)
     merge.bheap = bheap.new(merge.cmp)
     for _, source in ipairs(sources) do
          local len = decode_iproto_header(source)
-	 local item = {data = source}
-	 if merge_fetch(merge, item) then
+         local item = {data = source}
+         if merge_fetch(merge, item) then
              merge.bheap:insert(item)
          end
     end
@@ -149,7 +152,7 @@ local function merge_new(parts)
     ffi.gc(merge.format, ffi.C.box_tuple_format_unref)
     merge.cmp = function (left, right)
         return ffi.C.box_tuple_compare(left.box_tuple, right.box_tuple,
-	                               merge.key_defs[0]) * merge.order < 0
+                                       merge.key_defs[0]) * merge.order < 0
     end
     return merge
 end
