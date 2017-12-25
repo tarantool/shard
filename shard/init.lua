@@ -3,7 +3,6 @@ local log = require('log')
 local digest = require('digest')
 local msgpack = require('msgpack')
 local remote = require('net.box')
-local yaml = require('yaml')
 local uuid = require('uuid')
 local json = require('json')
 local lib_pool = require('shard.connpool')
@@ -273,11 +272,10 @@ local function shard_status()
         offline = {},
         maintenance = maintenance
     }
-    for j = 1, #shards do
-         local srd = shards[j]
-         for i = 1, redundancy do
-             local s = { uri = srd[i].uri, id = srd[i].id }
-             if srd[i].conn:is_connected() then
+    for _, shard_set in ipairs(shards) do
+         for _, shard in ipairs(shard_set) do
+             local s = { uri = shard.uri, id = shard.id }
+             if shard.conn and shard.conn:is_connected() then
                  table.insert(result.online, s)
              else
                  table.insert(result.offline, s)
@@ -713,16 +711,91 @@ local function append_shard(servers, is_replica, start_waiter)
     if #non_arbiters ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
+
+    -- check old nodes' availability
+    local status = shard_status()
+    if #status.offline ~= 0 then
+        local uris = {}
+        for _, srv in ipairs(status.offline) do
+            table.insert(uris, srv.uri)
+        end
+        return false, string.format('"%s" are offline', table.concat(uris, ', '))
+    end
+
+    local login    = configuration.login
+    local password = configuration.password
+
+    -- check new nodes' availability
+    for _, srv in ipairs(non_arbiters) do
+        local conn = remote:new(srv.uri, {
+            reconnect_after = RECONNECT_AFTER,
+            user = login,
+            password = password
+        })
+        if conn.state ~= 'active' then
+            return false, string.format(
+                "Server '%s' is unavailable, error: %s",
+                srv.uri, conn.error
+            )
+        end
+        conn:close()
+    end
+
     -- Turn on resharding mode
     if not is_replica then
         box.space._shard:replace{RSD_STATE, 1}
     end
     -- add new "virtual" shard and append server
     shards[shards_n + 1] = {}
-    shards_n = shards_n + 1
 
+    -- get updated shard list from a new shard
+    local conn = remote:new(non_arbiters[1].uri, {
+        reconnect_after = RECONNECT_AFTER,
+        user = login,
+        password = password
+    })
+    if conn.state ~= 'active' then
+        return false, string.format(
+            "Server '%s' is unavailable, error: %s",
+            non_arbiters[1].uri, conn.error
+        )
+    end
+    local replica_sets = conn:call("get_server_list")
+    conn:close()
+
+    local zones = {}
     -- connect pair to shard
-    for id, server in pairs(non_arbiters) do
+    for id, server in ipairs(non_arbiters) do
+        -- retrieve zone from configs
+        local server_in_config = false
+        for _, srv in ipairs(replica_sets) do
+            if server.uri == srv.uri then
+                if type(srv.zone) ~= 'string' then
+                    return false, string.format(
+                        "Config is incorrect. " ..
+                        "Expected 'string' for zone, got '%s'", type(srv.zone)
+                    )
+                end
+                server_in_config = true
+                server.zone = srv.zone
+            end
+        end
+        if not server_in_config then
+            return false, string.format(
+                "Config is incorrect. Server is not found for '%s'", server.uri
+            )
+        end
+        if not server.zone then
+            return false, string.format(
+                "Config is incorrect. Zone is missing for '%s'", server.uri
+            )
+        end
+        -- check distinction of zones
+        if zones[server.zone] then
+            return false, "Config is incorrect. Zones must vary in replica set"
+        else
+            zones[server.zone] = true
+        end
         -- create zone if needed
         if pool.servers[server.zone] == nil then
             pool.zones_n = pool.zones_n + 1
@@ -733,14 +806,15 @@ local function append_shard(servers, is_replica, start_waiter)
         -- disable new shard by default
         --server.ignore = true
         -- append server to connection pool
-        pool:connect(shards_n*redundancy - id + 1, server)
+        pool:connect((shards_n + 1) * redundancy - id + 1, server)
         local zone = pool.servers[server.zone]
         zone.list[zone.n].zone_name = server.zone
 
         if not server.arbiter then
-            table.insert(shards[shards_n], zone.list[zone.n])
+            table.insert(shards[shards_n + 1], zone.list[zone.n])
         end
     end
+    shards_n = shards_n + 1
     if not is_replica then
         box.space._shard:replace{RSD_STATE, 2}
     elseif start_waiter then
@@ -758,6 +832,10 @@ local function get_zones()
         end
     end
     return result
+end
+
+local function get_server_list()
+    return configuration.servers
 end
 
 local function is_shard_connected(uri, conn)
@@ -1857,6 +1935,7 @@ _G.force_transfer    = force_transfer
 _G.get_zones         = get_zones
 _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
+_G.get_server_list   = get_server_list
 
 shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
