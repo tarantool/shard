@@ -266,6 +266,7 @@ local function shard_status()
     local result = {
         online = {},
         offline = {},
+        uuids = {},
         maintenance = maintenance
     }
     for _, shard_set in ipairs(shards) do
@@ -273,6 +274,8 @@ local function shard_status()
              local s = { uri = shard.uri, id = shard.id }
              if shard.conn and shard.conn:is_connected() then
                  table.insert(result.online, s)
+                 local shard_uuid = shard.conn:eval('return box.info.uuid')
+                 result.uuids[shard_uuid] = s.uri
              else
                  table.insert(result.offline, s)
              end
@@ -708,35 +711,6 @@ local function append_shard(servers, is_replica, start_waiter)
         return false, 'Amount of servers is not equal redundancy'
     end
 
-    -- check old nodes' availability
-    local status = shard_status()
-    if #status.offline ~= 0 then
-        local uris = {}
-        for _, srv in ipairs(status.offline) do
-            table.insert(uris, srv.uri)
-        end
-        return false, string.format('"%s" are offline', table.concat(uris, ', '))
-    end
-
-    local login    = configuration.login
-    local password = configuration.password
-
-    -- check new nodes' availability
-    for _, srv in ipairs(non_arbiters) do
-        local conn = remote:new(srv.uri, {
-            reconnect_after = RECONNECT_AFTER,
-            user = login,
-            password = password
-        })
-        if conn.state ~= 'active' then
-            return false, string.format(
-                "Server '%s' is unavailable, error: %s",
-                srv.uri, conn.error
-            )
-        end
-        conn:close()
-    end
-
     -- Turn on resharding mode
     if not is_replica then
         box.space._shard:replace{RSD_STATE, 1}
@@ -745,6 +719,8 @@ local function append_shard(servers, is_replica, start_waiter)
     shards[shards_n + 1] = {}
 
     -- get updated shard list from a new shard
+    local login    = configuration.login
+    local password = configuration.password
     local conn = remote:new(non_arbiters[1].uri, {
         reconnect_after = RECONNECT_AFTER,
         user = login,
@@ -847,6 +823,9 @@ local function is_shard_connected(uri, conn)
 end
 
 local function shard_connect(s_obj)
+    if s_obj.conn == nil then
+        return false
+    end
     if s_obj.conn:is_connected() then
         maintenance[s_obj.id] = nil
         return true
