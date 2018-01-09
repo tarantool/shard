@@ -546,7 +546,7 @@ local function rsd_finalize()
     while is_transfer_locked() do
         fiber.sleep(0.1)
     end
-    space_iteration(false)
+    space_iteration(true)
     wait_iteration()
 
     log.info('Resharding complete')
