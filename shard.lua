@@ -89,7 +89,7 @@ local init_complete = false
 local configuration = {}
 local shard_obj
 
--- 1.6 and 1.7 netbox compat
+--- 1.6 and 1.7 netbox compat
 local compat = string.sub(require('tarantool').version, 1,3)
 local nb_call = 'call'
 if compat ~= '1.6' then
@@ -105,6 +105,42 @@ local function wait_connection()
     while not is_connected() do
         fiber.sleep(0.01)
     end
+end
+
+--[[
+Correct way to handle connection fiber
+Arguments:
+    1) url in host:port format
+    2) optional arguments (as Lua table)
+        - user
+        - password
+        - timeout in seconds
+        - reconnect_after in seconds (default: 1)
+    If timeout is nil, fiber will not wait for the connection
+Usage:
+    net_connect('localhost:3301', { user = 'admin', password = '123', timeout = 10 })
+    net_connect('localhost:3301') -- do not wait guest login
+Return:
+    1) ok - true/false
+    2) net.box connection object (ok == true) OR an error message (ok == false)
+]]--
+local function net_connect(uri, opts)
+    local ok, conn = pcall(remote.new, remote, uri, {
+            wait_connected = false,
+            reconnect_after = opts.reconnect_after or 1,
+            user = opts.user,
+            password = opts.password
+    })
+    if not ok then
+        return false, conn
+    end
+    local tm = opts.timeout or 0
+    if not conn:wait_connected(tm) then
+        local _error = conn.error
+        conn:close()
+        return false, _error
+    end
+    return true, conn
 end
 
 
@@ -272,8 +308,12 @@ local function shard_status()
              local s = { uri = shard.uri, id = shard.id }
              if shard.conn and shard.conn:is_connected() then
                  table.insert(result.online, s)
-                 local shard_uuid = shard.conn:eval('return box.info.uuid')
-                 result.uuids[shard_uuid] = s.uri
+                 local ok, info = pcall(shard.conn.call, shard.conn, 'box.info')
+                 if not ok then
+                     table.insert(result.offline, s)
+                 else
+                     result.uuids[info.uuid] = s.uri
+                 end
              else
                  table.insert(result.offline, s)
              end
@@ -652,7 +692,7 @@ local function resharding_status_syncronizer()
         local cluster = _G.remote_resharding_state()
         local current_in_progress = box.space._shard:get{RSD_FLAG}[2]
         local in_progress = 0
-        for i, node in pairs(cluster) do
+        for _, node in pairs(cluster) do
             if node.data and node.data[1] and node.data[1][1] then
                 local response = node.data[1][1]
                 if response.status then
@@ -680,18 +720,17 @@ end
 
 _G.remote_resharding_state = function()
     local result = {}
-    for j = 1, #shards do
-         local srd = shards[j]
-         for i = 1, redundancy do
-               local res = { uri = srd[i].uri }
-               local ok, err = pcall(function()
-                   local conn = srd[i].conn
-                   res.data = conn[nb_call](
-                       conn, 'resharding_status'
-                   )
-              end)
-              table.insert(result, res)
-         end
+    for _, shard_set in ipairs(shards) do
+        for _, shard in ipairs(shard_set) do
+            local res = { uri = shard.uri }
+            local ok, err = pcall(function()
+                local conn = shard.conn
+                res.data = conn[nb_call](conn, 'resharding_status')
+            end)
+            if ok then
+                table.insert(result, res)
+            end
+        end
     end
     return result
 end
@@ -731,15 +770,16 @@ local function append_shard(servers, is_replica, start_waiter)
     -- get updated shard list from a new shard
     local login    = configuration.login
     local password = configuration.password
-    local conn = remote:new(non_arbiters[1].uri, {
-        reconnect_after = RECONNECT_AFTER,
+    local ok, conn = net_connect(non_arbiters[1].uri, {
         user = login,
-        password = password
+        password = password,
+        timeout = 10,
+        reconnect_after = RECONNECT_AFTER
     })
-    if conn.state ~= 'active' then
+    if not ok then
         return false, string.format(
             "Server '%s' is unavailable, error: %s",
-            non_arbiters[1].uri, conn.error
+            non_arbiters[1].uri, conn
         )
     end
     local replica_sets = conn:call("get_server_list")
@@ -820,41 +860,36 @@ local function get_server_list()
     return configuration.servers
 end
 
-local function is_shard_connected(uri, conn)
-    local try = 1
-    while try < 20 do
-        if conn:ping() then
-            return true
-        end
-        try = try + 1
-        fiber.sleep(0.01)
-    end
-    return false
-end
-
 local function shard_connect(s_obj)
-    if s_obj.conn == nil then
-        return false
-    end
-    if s_obj.conn:is_connected() then
-        maintenance[s_obj.id] = nil
+    -- check if connection exists
+    if s_obj.conn ~= nil and s_obj.conn:is_connected() then
+        if maintenance[s_obj.id] ~= nil then
+            maintenance[s_obj.id] = nil
+            log.info("Return '%s' from maintenance", s_obj.uri)
+        end
+        log.info("Server '%s' has been online", s_obj.uri)
         return true
     end
-    local msg = 'Failed to join shard %d with url "%s"'
-    local uri = s_obj.login .. ':' .. s_obj.password .. '@' .. s_obj.uri
-
     -- try to join replica
-    s_obj.conn = remote:new(uri, { reconnect_after = RECONNECT_AFTER })
-    -- ping node
-    local joined = is_shard_connected(uri, s_obj.conn)
-
-    if joined then
-        msg = 'Succesfully joined shard %d with url "%s"'
+    local ok, conn = net_connect(s_obj.uri, {
+        user = s_obj.login,
+        password = s_obj.password,
+        timeout = 10,
+        reconnect_after = RECONNECT_AFTER
+    })
+    if not ok then
+        local msg = string.format(
+            "Server '%s' is unavailable or does not exist (%s)",
+            s_obj.uri, conn
+        )
+        log.info(msg)
+        return false, msg
     end
-    log.info(msg, s_obj.id, s_obj.uri)
+    s_obj.conn = conn
     -- remove from maintenance table
     maintenance[s_obj.id] = nil
-    return joined
+    log.info("Succesfully joined shard %d with url '%s'", s_obj.id, s_obj.uri)
+    return true
 end
 
 local function shard_swap(group_id, shard_id)
@@ -884,21 +919,20 @@ end
 
 -- join node by id in this shard
 local function join_shard(id)
-    for j = 1, #shards do
-         local srd = shards[j]
-         for i = 1, redundancy do
-             if srd[i].id == id then
-                 -- swap RO/RW shards
-                 local to_join = srd[i]
-                 to_join.ignore = true
-                 shard_swap(j, i)
-                 to_join.ignore = false
-                 -- try to join replica
-                 return shard_connect(to_join)
-             end
-         end
+    for j, shard_set in ipairs(shards) do
+        for i, shard in ipairs(shard_set) do
+            if shard.id == id then
+                -- swap RO/RW shards
+                local to_join = shard
+                to_join.ignore = true
+                shard_swap(j, i)
+                to_join.ignore = false
+                -- try to join replica
+                return shard_connect(to_join)
+            end
+        end
     end
-    return false
+    return false, string.format("There is no shard with id %d", id)
 end
 
 local function unjoin_shard(id)
@@ -914,7 +948,7 @@ local function on_action(self, msg)
 end
 
 local function cluster_operation(func_name, ...)
-    local jlog = {}
+    local remote_log = {}
     local q_args = {...}
     local all_ok = true
 
@@ -924,40 +958,43 @@ local function cluster_operation(func_name, ...)
         id = q_args[1]
     end
 
-    for j=1, #shards do
-         local srd =shards[j]
-         for i=1, redundancy do
-             if srd[i].id ~= id then
-                 local result = false
-                 local ok, err = pcall(function()
-                     log.info(
-                         "Trying to '%s' shard %d with shard %s",
-                         func_name, srd[i].id, srd[i].uri
-                     )
-                     local conn = srd[i].conn
-                     local is_replica = i == 1
-                     result = conn[nb_call](conn, func_name, unpack(q_args), is_replica)[1][1]
-                 end)
-                 if not ok or not result then
-                     local msg = string.format(
-                        '"%s" error: %s',
-                        func_name, tostring(err)
-                     )
-                     table.insert(jlog, msg)
-                     log.error(msg)
-                     all_ok = false
-                 else
-                     local msg = string.format(
-                         "Operaion '%s' for shard %d in node '%s' applied",
-                         func_name, srd[i].id, srd[i].uri
-                     )
-                     table.insert(jlog, msg)
-                     shard_obj:on_action(msg)
-                 end
-             end
-         end
+    -- requested function is called on each node of all shards
+    -- there are 2 types of operations possible:
+    -- 1) does not depend on shard id (append)
+    -- 2) depends on shard id (join, unjoin)
+    -- the last one requires to skip node which is being joined/unjoined
+    -- that's why we check for its id before proceeding with operation
+    for _, shard_set in ipairs(shards) do
+        for i, shard in ipairs(shard_set) do
+            if shard.id ~= id then
+                -- local ok, completed, err = pcall(function()
+                if shard.conn ~= nil then
+                    log.info(
+                        "Trying to '%s' to shard %d in node %s",
+                        func_name, shard.id, shard.uri
+                    )
+                    local ok, err = shard.conn:call(func_name, q_args)
+                    if not ok then
+                        local msg = string.format('"%s" error: %s', func_name, err)
+                        table.insert(remote_log, msg)
+                        log.error(msg)
+                        all_ok = false
+                    else
+                        local msg = string.format(
+                            "Operaion '%s' for shard %d in node '%s' applied",
+                            func_name, shard.id, shard.uri
+                        )
+                        table.insert(remote_log, msg)
+                        shard_obj:on_action(msg)
+                    end
+                else
+                    local msg = string.format("Server '%s' is offline", shard.uri)
+                    table.insert(remote_log, msg)
+                end
+            end
+        end
     end
-    return all_ok, jlog
+    return all_ok, remote_log
 end
 
 -- join node by id in cluster:
@@ -1224,8 +1261,8 @@ local function request(self, space, operation, tuple_id, ...)
 end
 
 local function broadcast_select(task)
-    local c = task.server.conn
-    local index = c:timeout(REMOTE_TIMEOUT).space[task.space].index[task.index]
+    local conn = task.server.conn
+    local index = conn:timeout(REMOTE_TIMEOUT).space[task.space].index[task.index]
     local key = task.args[1]
     local offset =  task.args[2]
     local limit = task.args[3]
@@ -1286,8 +1323,7 @@ local function q_select(self, space, index, args)
 end
 
 local function broadcast_call(task)
-    local c = task.server.conn
-    local conn = c:timeout(REMOTE_TIMEOUT)
+    local conn = task.server.conn:timeout(REMOTE_TIMEOUT)
     local tuples = conn[nb_call](conn, task.proc, unpack(task.args))
     for _, v in ipairs(tuples) do
         table.insert(task.result, v)
@@ -1537,7 +1573,7 @@ local function truncate(self, space)
                                  master.conn.space._shard,
                                  {RSD_HANDLED})
             if not ok then
-                log.error('Request to server: %s failed. (%s)', master.uri, rv)
+                log.error('Request to server: %s failed (%s)', master.uri, rv)
                 return ok
             end
             local handled_spaces = rv[2]
@@ -1547,7 +1583,7 @@ local function truncate(self, space)
                                         master.conn.space._shard,
                                         {RSD_HANDLED, handled_spaces})
                 if not ok then
-                    log.error('Request to server: %s failed. (%s)', master.uri,
+                    log.error('Request to server: %s failed (%s)', master.uri,
                               error)
                     return ok
                 end
@@ -1566,7 +1602,7 @@ local function truncate(self, space)
             if not ok then
                 error = res
             end
-            log.error('Error occured during a truncate of the space %s on the server: %s. (%s)',
+            log.error('Error occured during a truncate of the space %s on the server: %s (%s)',
                       space, master.uri, error)
         end
     end
