@@ -1549,12 +1549,12 @@ local function truncate(self, space)
     for _, node_set in ipairs(shards) do
         local master = node_set[#node_set]
         local execute_string = string.format("return require('shard').truncate_local_space('%s')", space)
-        local pcall_ok, ok, result = pcall(master.conn.eval, master.conn, execute_string)
+        local pcall_ok, ok, res = pcall(master.conn.eval, master.conn, execute_string)
         if not pcall_ok or not ok then
             result = false
             local error = ok
             if not ok then
-                error = result
+                error = res
             end
             log.error('Error occured during a truncate of the space %s on the server: %s. %s',
                       space, master.uri, error)
