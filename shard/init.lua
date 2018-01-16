@@ -80,7 +80,7 @@ local RSD_CURRENT = 'CUR_SPACE'
 local RSD_FINISHED = 'FINISHED_SPACE'
 local RSD_HANDLED = 'HANDLED_SPACES'
 local RSD_STATE = 'RESHARDING'
-local RDS_FLAG = 'RESHARDING_STATE'
+local RSD_FLAG = 'RESHARDING_STATE'
 local TUPLES_PER_ITERATION = 1000
 
 local init_complete = false
@@ -210,16 +210,14 @@ queue_mt = {
 
 local maintenance = {}
 
-local function reshard_works()
-    -- check that resharing started (used by shard function)
-    local mode = box.space._shard:get{'RESHARDING'}
-    return mode ~= nil and mode[2] > 0
-end
-
-local function reshard_ready()
-    -- check that new nodes are connected after resharing start
-    local mode = box.space._shard:get{'RESHARDING'}
-    return mode ~= nil and mode[2] > 1
+local function reshard_works(synchronizer_enabled)
+    local mode
+    if synchronizer_enabled then
+        mode = box.space._shard:get{RSD_FLAG}
+    else
+        mode = box.space._shard:get{RSD_STATE}
+    end
+    return mode ~= nil and mode[2] == 1
 end
 
 local function lock_transfer()
@@ -439,6 +437,10 @@ end
 
 local function transfer(self, space, worker, data, force)
     for _, meta in pairs(data) do
+        -- data from worker may be deleted by the truncate function
+        if worker:get{meta[1]} == nil then
+            goto continue
+        end
         local index = {}
         if force then
             index = meta
@@ -449,6 +451,10 @@ local function transfer(self, space, worker, data, force)
             worker:update(meta[1], {{'=', 2, STATE_INPROGRESS}})
         end
         local tuple = space:get(index)
+        -- tuple may be deleted by the 'truncate' function
+        if not tuple then
+            goto continue
+        end
         local ok, err = pcall(function()
             local nodes = shard(tuple[1])
             self:single_call(space.name, nodes[1], 'replace', tuple)
@@ -463,6 +469,7 @@ local function transfer(self, space, worker, data, force)
         else
             log.info('Transfer error: %s', err)
         end
+        ::continue::
     end
 end
 
@@ -489,7 +496,7 @@ local function transfer_worker(self)
     fiber.name('transfer')
     wait_connection()
     while true do
-        if reshard_ready() then
+        if reshard_works() then
             local cur_space = box.space._shard:get(RSD_CURRENT)
             local space = box.space[cur_space[2]]
 
@@ -536,6 +543,7 @@ end
 
 local function rsd_init()
     local sh = box.space._shard
+    sh:replace{RSD_STATE, 0}
     sh:replace{RSD_HANDLED, {}}
     sh:replace{RSD_CURRENT, ''}
     sh:replace{RSD_FINISHED, ''}
@@ -615,7 +623,7 @@ local function resharding_worker(self)
     end
 
     while true do
-        if reshard_ready() then
+        if reshard_works() then
             local cur_space = sh:get(RSD_CURRENT)[2]
             local finished = sh:get(RSD_FINISHED)[2]
 
@@ -638,11 +646,15 @@ local function resharding_worker(self)
     end
 end
 
-local function rsd_join()
-    -- storages checker. Can be used in app servers
-    fiber.name('Resharding waiter')
+local function is_synchronizer_enabled()
+    return box.space._shard:get{RSD_FLAG} ~= nil
+end
+
+local function resharding_status_syncronizer()
+    fiber.name('Resharding status synchronizer')
     while true do
         local cluster = _G.remote_resharding_state()
+        local current_in_progress = box.space._shard:get{RSD_FLAG}[2]
         local in_progress = 0
         for i, node in pairs(cluster) do
             local response = node.data[1][1]
@@ -651,18 +663,21 @@ local function rsd_join()
                 break
             end
         end
-        box.space._shard:replace{RDS_FLAG, in_progress}
-        if in_progress == 0 then
-            log.info('Resharding state: off')
-            return
+        if current_in_progress ~= in_progress then
+            box.space._shard:replace{RSD_FLAG, in_progress}
+            local state = in_progress ~= 0 and 'on' or 'off'
+            log.info('Resharding state: %s', state)
         end
+
         fiber.sleep(0.1)
     end
 end
 
-local function set_rsd()
-    box.space._shard:replace{RDS_FLAG, 1}
-    fiber.create(rsd_join)
+-- synchronizer used to pass a resharding status from storages(nodes
+-- where a data kept) to application nodes
+local function init_synchronizer()
+    box.space._shard:replace{RSD_FLAG, 0}
+    fiber.create(resharding_status_syncronizer)
 end
 
 _G.remote_resharding_state = function()
@@ -686,7 +701,7 @@ end
 local function resharding_status()
     local status = box.space._shard:get{RSD_STATE}
     if status ~= nil then
-        status = status[2] == 2
+        status = status[2] == 1
     else
         status = false
     end
@@ -714,13 +729,6 @@ local function append_shard(servers, is_replica, start_waiter)
     if #non_arbiters ~= redundancy then
         return false, 'Amount of servers is not equal redundancy'
     end
-
-    -- Turn on resharding mode
-    if not is_replica then
-        box.space._shard:replace{RSD_STATE, 1}
-    end
-    -- add new "virtual" shard and append server
-    shards[shards_n + 1] = {}
 
     -- get updated shard list from a new shard
     local login    = configuration.login
@@ -779,23 +787,22 @@ local function append_shard(servers, is_replica, start_waiter)
                 id = pool.zones_n, n = 0, list = {}
             }
         end
-        -- disable new shard by default
-        --server.ignore = true
+
         -- append server to connection pool
         pool:connect((shards_n + 1) * redundancy - id + 1, server)
         local zone = pool.servers[server.zone]
         zone.list[zone.n].zone_name = server.zone
 
         if not server.arbiter then
+            shards[shards_n + 1] = shards[shards_n + 1] or {}
             table.insert(shards[shards_n + 1], zone.list[zone.n])
         end
     end
     shards_n = shards_n + 1
     if not is_replica then
-        box.space._shard:replace{RSD_STATE, 2}
-    elseif start_waiter then
-        set_rsd()
+        box.space._shard:replace{RSD_STATE, 1}
     end
+
     return true
 end
 
@@ -1513,6 +1520,54 @@ local function update(self, space, key, data)
     return request(self, space, 'update', key[1], key, data)
 end
 
+local function truncate_local_space(space)
+    local ok, error = pcall(box.space[space].truncate, box.space[space])
+    if not ok then
+        log.error('Error occured during a truncate of the space: %s %s', space, error)
+    end
+
+    return ok, error
+end
+
+local function truncate(self, space)
+    local synchronizer_enabled = is_synchronizer_enabled()
+    if reshard_works(synchronizer_enabled) then
+        for _, node_set in ipairs(shards) do
+            local master = node_set[#node_set]
+            local handled_spaces = master.conn.space._shard:get{RSD_HANDLED}[2]
+            if not contains(handled_spaces, space) then
+                table.insert(handled_spaces, space)
+                local ok, error = pcall(master.conn.space._shard.replace,
+                                        master.conn.space._shard,
+                                        {RSD_HANDLED, handled})
+                if not ok then
+                    log.error('Error occured during a truncate of the space %s on the server: %s. %s',
+                              space, master.uri, error)
+                    return result
+                end
+            end
+        end
+    end
+
+    local result = true
+    for _, node_set in ipairs(shards) do
+        local master = node_set[#node_set]
+        local execute_string = string.format("return require('shard').truncate_local_space('%s')", space)
+        local pcall_ok, ok, result = pcall(master.conn.eval, master.conn, execute_string)
+        if not pcall_ok or not ok then
+            result = false
+            local error = ok
+            if not ok then
+                error = result
+            end
+            log.error('Error occured during a truncate of the space %s on the server: %s. %s',
+                      space, master.uri, error)
+        end
+    end
+
+    return result
+end
+
 local function q_insert(self, space, operation_id, data)
     local tuple_id = data[1]
     queue_request(self, space, 'insert', operation_id, tuple_id, data)
@@ -1761,6 +1816,8 @@ local function enable_operations()
     shard_obj.replace = replace
     shard_obj.update = update
     shard_obj.delete = delete
+    shard_obj.truncate = truncate
+    shard_obj.truncate_local_space = truncate_local_space
 
     -- set 2-phase operations
     shard_obj.q_insert = q_insert
@@ -1799,6 +1856,9 @@ local function enable_operations()
                 end,
                 update = function(this, ...)
                     return self.update(self, space, ...)
+                end,
+                truncate = function(this, ...)
+                    return self.truncate(self, space, ...)
                 end,
 
                 q_auto_increment = function(this, ...)
@@ -1937,7 +1997,7 @@ shard_obj = {
     init = init,
     shard = shard,
     pool = pool,
-    set_rsd = set_rsd,
+    init_synchronizer = init_synchronizer,
     check_shard = check_shard,
     enable_resharding = function(self)
         fiber.create(resharding_worker, self)
