@@ -789,6 +789,7 @@ local function append_shard(servers, is_replica, start_waiter)
         local zone = pool.servers[server.zone]
         zone.list[zone.n].zone_name = server.zone
 
+        -- TODO: functionality with the arbiter should be deleted in a future
         if not server.arbiter then
             shards[shards_n + 1] = shards[shards_n + 1] or {}
             table.insert(shards[shards_n + 1], zone.list[zone.n])
@@ -1530,16 +1531,23 @@ local function truncate(self, space)
     if reshard_works(synchronizer_enabled) then
         for _, node_set in ipairs(shards) do
             local master = node_set[#node_set]
-            local handled_spaces = master.conn.space._shard:get{RSD_HANDLED}[2]
+            local ok, rv = pcall(master.conn.space._shard.get,
+                                 master.conn.space._shard,
+                                 {RSD_HANDLED})
+            if not ok then
+                log.error('Request to server: %s failed. (%s)', master.uri, rv)
+                return ok
+            end
+            local handled_spaces = rv[2]
             if not contains(handled_spaces, space) then
                 table.insert(handled_spaces, space)
                 local ok, error = pcall(master.conn.space._shard.replace,
                                         master.conn.space._shard,
-                                        {RSD_HANDLED, handled})
+                                        {RSD_HANDLED, handled_spaces})
                 if not ok then
-                    log.error('Error occured during a truncate of the space %s on the server: %s. %s',
-                              space, master.uri, error)
-                    return result
+                    log.error('Request to server: %s failed. (%s)', master.uri,
+                              error)
+                    return ok
                 end
             end
         end
@@ -1556,7 +1564,7 @@ local function truncate(self, space)
             if not ok then
                 error = res
             end
-            log.error('Error occured during a truncate of the space %s on the server: %s. %s',
+            log.error('Error occured during a truncate of the space %s on the server: %s. (%s)',
                       space, master.uri, error)
         end
     end
