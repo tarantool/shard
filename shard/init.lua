@@ -272,8 +272,14 @@ local function is_transfer_locked()
     return lock[2] > 0
 end
 
--- main shards search function
-local function shard(key, use_old)
+-- function determinates on which shard data is
+-- @key - shard key
+-- @include_dead - if a node in the maintenance mode and this option is true,
+-- then this node would be added to shard function
+-- @use_old - if resharding state is active and this option is true, then new node
+-- would be excluded from shard function
+-- @returns shard where data is or nil, {error = error_text}
+local function shard(key, include_dead, use_old)
     local num = type(key) == 'number' and key or digest.crc32(key)
     local max_shards = shards_n
     -- if we want to find shard in old mapping
@@ -281,22 +287,33 @@ local function shard(key, use_old)
         max_shards = max_shards - 1
     end
     local shard = shards[1 + digest.guava(num, max_shards)]
-    local res = {}
-    local k = 1
-
-    if shard == nil then
-        return nil
+    if shard == nil or shard[1] == nil then
+        return nil, {error = 'Shard function have returned an empty result.' ..
+                    'Please make sure that your storages are alive.'}
     end
-    for i = 1, redundancy do
-        local srv = shard[redundancy - i + 1]
-        -- GH-72
-        -- we need to save shards state during maintenance
-        -- client will recive error "shard is unavailable"
-        if not maintenance[srv.id] and pool:server_is_ok(srv) then
-            res[k] = srv
-            k = k + 1
+    local res = {}
+
+    -- The master node and its replicas have been located in the reverse order.
+    -- It means what master is located as shard[#shard].
+    -- We should reverse the order of this table, because it's more obvious
+    -- to get a mster as first element
+    for i = #shard, 1, -1 do
+        local server = shard[i]
+        -- A node in the maintenance mode may be in the read-only state.
+        -- In this case if the node will be excluded from the output of the
+        -- shard function, a recording to the cluster will be affected, because
+        -- the shard function will be changed. It will cause an inconsistent state
+        -- of the cluster.
+        -- If a write request will be sent to the sever in the maintenance mode,
+        -- it will finished with error.
+        -- TODO: in future the entire cluster should be switched to the read-only
+        -- mode in this case
+        if maintenance[server.id] ~= nil or pool:server_is_ok(server) or
+            include_dead then
+                table.insert(res, server)
         end
     end
+
     return res
 end
 
@@ -732,9 +749,11 @@ _G.remote_resharding_state = function()
                 local conn = shard.conn
                 res.data = conn[nb_call](conn, 'resharding_status')
             end)
-            if ok then
-                table.insert(result, res)
+            if not ok then
+                log.error("operation resharding_status failed on node: %s with: %s",
+                          res.uri, err)
             end
+            table.insert(result, res)
         end
     end
     return result
@@ -1066,6 +1085,14 @@ end
 -- base remote operation on space
 local function space_call(self, space_name, server, fun, ...)
     local result = nil
+    if server == nil or server.conn == nil then
+        return nil, {error = 'Connection to server was lost'}
+    end
+
+    if fun == nil or type(fun) ~= 'function' then
+        return nil, {error = 'Argument should be a function'}
+    end
+
     local status, reason = pcall(function(...)
         local conn = server.conn:timeout(5 * REMOTE_TIMEOUT)
         local space_obj = conn.space[space_name]
@@ -1080,11 +1107,7 @@ local function space_call(self, space_name, server, fun, ...)
             'failed to execute operation on %s: %s',
             server.uri, reason
         )
-        log.error(err)
-        result = {status=false, error=err}
-        if not server.conn:is_connected() then
-            log.error("server %s is offline", server.uri)
-        end
+        return nil, { error = err, errno = reason.code }
     end
     return result
 end
@@ -1161,13 +1184,19 @@ local function mr_select(self, space_name, nodes, index_id, limits, key)
         end
         local buf = buffer.ibuf()
         limits.buffer = buf
-        local part = index_call(self, space_name, srd, 'select', index_id, key,
+        local part, err = index_call(self, space_name, srd, 'select', index_id, key,
                                 limits)
+        if err then
+            return nil, err
+        end
         while part == nil and j >= 0 do
             j = j - 1
             srd = node[j]
-            part = index_call(self, space_name, srd, 'select', index_id, key,
+            part, err = index_call(self, space_name, srd, 'select', index_id, key,
                               limits)
+            if err then
+                return nil, err
+            end
         end
         table.insert(results, buf)
     end
@@ -1202,25 +1231,42 @@ local function direct_call(self, server, func_name, ...)
     return result
 end
 
+-- function is a similar as shard function, but
+-- it should be used if a cluster in a resharding state.
+-- This function serches a data with a new shard function at first, then
+-- it searches with an old shard function.
+-- @space - space, where data is
+-- @tuple_id - shard key
+-- @... - index key
+-- @returns shard, where data is
 local function lookup(self, space, tuple_id, ...)
     local q_args = {...}
     local key = {}
     if #q_args > 0 then
         key = q_args[1]
     else
-        return false, 'Wrong params'
+        return nil, 'Missing params for lookup function'
     end
 
     -- try to find in new shard
-    local nodes = shard(tuple_id)
-    local new_data = single_call(self, space, nodes[1], 'select', key)
+    local nodes, err = shard(tuple_id)
+    if not nodes then
+        return nil, err
+    end
+    local new_data, err = single_call(self, space, nodes[1], 'select', key)
+    if not new_data then
+        return nil, err
+    end
     if #new_data > 0 then
         -- tuple transfer complete, we can use new shard for this request
         return nodes
     end
 
-    local old_nodes = shard(tuple_id, true)
-    local old_data = single_call(self, space, old_nodes[1], 'select', key)
+    local old_nodes = shard(tuple_id, false, true)
+    local old_data, err = single_call(self, space, old_nodes[1], 'select', key)
+    if not old_data then
+        return nil, err
+    end
     if #old_data == 0 then
         -- tuple not found in old shard:
         -- 1. it does not exists
@@ -1230,10 +1276,10 @@ local function lookup(self, space, tuple_id, ...)
     end
 
     -- tuple was found let's check transfer state
-    local result = index_call(
-        self, '_shard', old_nodes[1],
-        'select', 3, key
-    )
+    local result, err = index_call(self, '_shard', old_nodes[1], 'select', 3, key)
+    if not result then
+        return nil, err
+    end
     if #result == 0 then
         -- we must use old shard
         -- FIXME: probably prev iteration is finished
@@ -1291,24 +1337,25 @@ local function transfer_wait(space, key)
     return true
 end
 
--- shards request function
+-- function makes requests to a cluster
+-- @space - space name where a data is
+-- @operation - name of operation. It is the same as tarantool space operation names.
+-- @tuple_id - shard key
+-- @returns result of operation or nil, {error = error_test, errno = error_code}
 local function request(self, space, operation, tuple_id, ...)
-    local result = {}
     local nodes = {}
+    local err
     if operation == 'insert' or not reshard_works() then
-        nodes = shard(tuple_id)
+        nodes, err = shard(tuple_id)
     else
         -- check where is the tuple
-        nodes = lookup(self, space, tuple_id, ...)
+        nodes, err = lookup(self, space, tuple_id, ...)
+    end
+    if not nodes then
+        return nil, err
     end
 
-    for _, server in ipairs(nodes) do
-        table.insert(result, single_call(self, space, server, operation, ...))
-        if configuration.replication == true then
-            break
-        end
-    end
-    return result
+    return single_call(self, space, nodes[1], operation, ...)
 end
 
 local function broadcast_select(task)
@@ -1607,12 +1654,12 @@ local function update(self, space, key, data)
 end
 
 local function truncate_local_space(space)
-    local ok, error = pcall(box.space[space].truncate, box.space[space])
+    local ok, err = pcall(box.space[space].truncate, box.space[space])
     if not ok then
-        log.error('Error occured during a truncate of the space: %s %s', space, error)
+        log.error('Error occured during a truncate of the space: %s %s', space, err)
     end
 
-    return ok, error
+    return ok, err
 end
 
 local function truncate(self, space)
@@ -1624,41 +1671,38 @@ local function truncate(self, space)
                                  master.conn.space._shard,
                                  {RSD_HANDLED})
             if not ok then
-                log.error('Request to server: %s failed (%s)', master.uri, rv)
-                return ok
+                return nil, {error = string.fromat('Request to server: %s failed (%s)', master.uri, rv),
+                             errno = rv.code}
             end
             local handled_spaces = rv[2]
             if not contains(handled_spaces, space) then
                 table.insert(handled_spaces, space)
-                local ok, error = pcall(master.conn.space._shard.replace,
+                local ok, err = pcall(master.conn.space._shard.replace,
                                         master.conn.space._shard,
                                         {RSD_HANDLED, handled_spaces})
                 if not ok then
-                    log.error('Request to server: %s failed (%s)', master.uri,
-                              error)
-                    return ok
+                    return nil, {error = string.fromat('Request to server: %s failed (%s)', master.uri, err),
+                                 errno = err.code}
                 end
             end
         end
     end
 
-    local result = true
     for _, node_set in ipairs(shards) do
         local master = node_set[#node_set]
         local execute_string = string.format("return require('shard').truncate_local_space('%s')", space)
         local pcall_ok, ok, res = pcall(master.conn.eval, master.conn, execute_string)
         if not pcall_ok or not ok then
-            result = false
-            local error = ok
+            local err = ok
             if not ok then
-                error = res
+                err = res
             end
-            log.error('Error occured during a truncate of the space %s on the server: %s (%s)',
-                      space, master.uri, error)
+            return nil, {error = string.fromat('Error occured during a truncate of the space %s on the server: %s (%s)',
+                           space, master.uri, err), errno = err.code}
         end
     end
 
-    return result
+    return true
 end
 
 local function q_insert(self, space, operation_id, data)
