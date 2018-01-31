@@ -968,7 +968,7 @@ local function cluster_operation(func_name, ...)
 
     -- we need to check shard id for direct operations
     local id = nil
-    if type(q_args[1]) == 'number' then
+    if type(q_args[1]) == 'number' and func_name ~= 'rotate_shard' then
         id = q_args[1]
     end
 
@@ -1011,6 +1011,32 @@ local function cluster_operation(func_name, ...)
     return all_ok, remote_log
 end
 
+--[[
+Current master is placed last in shard's table. In order to tranfer roles
+among replicas, we have to manipulate with the shard's table and assign
+penultimate node as the new master.
+Old master is returned to the head of the table.
+]]--
+local function rotate_shard(shard_id)
+    local master = table.remove(shards[shard_id])
+    table.insert(shards[shard_id], 1, master)
+    return true
+end
+
+--[[
+Sync current node's shard table with remote replica.
+zones -- simplified shard table, returned by get_zones() function
+]]--
+local function synchronize_shards_object(zones)
+    for i, zone in ipairs(zones) do
+        for j, srv in ipairs(zone) do
+            if shards[i][j].uri ~= srv then
+                rotate_shard(i)
+            end
+        end
+    end
+end
+
 -- join node by id in cluster:
 -- 1. Create new replica and wait lsn
 -- 2. Join storage cluster
@@ -1025,6 +1051,11 @@ end
 
 local function remote_append(servers)
     return cluster_operation("append_shard", servers)
+end
+
+-- call rotate_shard on each replica in shards table
+local function remote_rotate(shard_id)
+    return cluster_operation("rotate_shard", shard_id)
 end
 
 -- base remote operation on space
@@ -2016,10 +2047,12 @@ end
 _G.append_shard      = append_shard
 _G.join_shard        = join_shard
 _G.unjoin_shard      = unjoin_shard
+_G.rotate_shard      = rotate_shard
 _G.resharding_status = resharding_status
 _G.remote_append     = remote_append
 _G.remote_join       = remote_join
 _G.remote_unjoin     = remote_unjoin
+_G.remote_rotate     = remote_rotate
 _G.drop_space        = drop_space
 _G.drop_index        = drop_index
 
@@ -2033,6 +2066,7 @@ _G.get_zones         = get_zones
 _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
 _G.get_server_list   = get_server_list
+_G.synchronize_shards_object = synchronize_shards_object
 
 _G.start_resharding  = start_resharding
 
