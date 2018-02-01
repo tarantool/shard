@@ -529,7 +529,7 @@ local function force_transfer(space_name, index)
 end
 
 local function transfer_worker(self)
-    fiber.name('transfer')
+    fiber.name('_transfer_worker')
     wait_connection()
     while true do
         if reshard_works() then
@@ -649,7 +649,7 @@ local function rsd_warmup(self)
 end
 
 local function resharding_worker(self)
-    fiber.name('resharding')
+    fiber.name('_resharding_worker')
     local sh = box.space._shard
     local rs_state = sh:get(RSD_STATE)
     if rs_state == nil or rs_state[2] == 0 then
@@ -716,6 +716,7 @@ end
 local function init_synchronizer()
     box.space._shard:replace{RSD_FLAG, 0}
     fiber.create(resharding_status_syncronizer)
+    log.info("Resharding synchronizer enabled")
 end
 
 _G.remote_resharding_state = function()
@@ -2070,6 +2071,46 @@ _G.synchronize_shards_object = synchronize_shards_object
 
 _G.start_resharding  = start_resharding
 
+-- get fiber id function
+local function get_fiber_id(fiber)
+    local fid = 0
+    if fiber ~= nil and fiber:status() ~= "dead" then
+        fid = fiber:id()
+    end
+    return fid
+end
+
+--[[
+Following functions are used during initialization process of a new replica.
+If we tranfer replica roles between nodes we also have to invoke corresponding
+operations on each node. Resharding workers must be created on new master and
+cancelled on the previous one.
+]]--
+local function enable_resharding(self)
+    self.resharding_worker = fiber.create(resharding_worker, self)
+    self.transfer_worker = fiber.create(transfer_worker, self)
+    log.info('Enabled resharding workers')
+end
+
+local function disable_resharding(self)
+    if (get_fiber_id(self.resharding_worker) ~= 0) then
+        self.resharding_worker:cancel()
+        while self.resharding_worker:status() ~= 'dead' do
+            fiber.sleep(0.01)
+        end
+        self.resharding_worker = nil
+        log.info('Disabled resharding worker')
+    end
+    if (get_fiber_id(self.transfer_worker) ~= 0) then
+        self.transfer_worker:cancel()
+        while self.transfer_worker:status() ~= 'dead' do
+            fiber.sleep(0.01)
+        end
+        self.transfer_worker = nil
+        log.info('Disabled transfer worker')
+    end
+end
+
 shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
     HEARTBEAT_TIMEOUT = HEARTBEAT_TIMEOUT,
@@ -2093,11 +2134,8 @@ shard_obj = {
     pool = pool,
     init_synchronizer = init_synchronizer,
     check_shard = check_shard,
-    enable_resharding = function(self)
-        fiber.create(resharding_worker, self)
-        fiber.create(transfer_worker, self)
-        log.info('Enabled resharding workers')
-    end
+    enable_resharding = enable_resharding,
+    disable_resharding = disable_resharding
 }
 
 return shard_obj
