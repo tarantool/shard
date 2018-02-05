@@ -657,10 +657,12 @@ local function resharding_status_syncronizer()
         local current_in_progress = box.space._shard:get{RSD_FLAG}[2]
         local in_progress = 0
         for i, node in pairs(cluster) do
-            local response = node.data[1][1]
-            if response.status then
-                in_progress = 1
-                break
+            if node.data and node.data[1] and node.data[1][1] then
+                local response = node.data[1][1]
+                if response.status then
+                    in_progress = 1
+                    break
+                end
             end
         end
         if current_in_progress ~= in_progress then
