@@ -754,7 +754,7 @@ local function resharding_status()
     }
 end
 
-local function append_shard(servers, is_replica, start_waiter)
+local function append_shard(servers)
     local non_arbiters = {}
 
     for _, candidate in ipairs(servers) do
@@ -838,10 +838,24 @@ local function append_shard(servers, is_replica, start_waiter)
         end
     end
     shards_n = shards_n + 1
-    if not is_replica then
-        box.space._shard:replace{RSD_STATE, 1}
-    end
+    -- start_resharding must be called outside of an append context in order
+    -- to mitigate errors occured during append procedure on remote replicas
+    return true
+end
 
+--[[
+Start resharding process on each master in shards table
+* this function must be called after successfull append
+]]--
+local function start_resharding()
+    for _, shard in ipairs(shards) do
+        local conn = shard[#shard].conn
+        if conn then
+            conn.space._shard:replace{RSD_STATE, 1}
+        else
+            return false, ("%s is unavailable"):format(shard[#shard].uri)
+        end
+    end
     return true
 end
 
@@ -2019,6 +2033,8 @@ _G.get_zones         = get_zones
 _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
 _G.get_server_list   = get_server_list
+
+_G.start_resharding  = start_resharding
 
 shard_obj = {
     REMOTE_TIMEOUT = REMOTE_TIMEOUT,
