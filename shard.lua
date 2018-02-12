@@ -143,6 +143,21 @@ local function net_connect(uri, opts)
     return true, conn
 end
 
+local function make_error(errno, fmt, ...)
+   if type(fmt) ~= 'string' then
+        fmt = tostring(fmt)
+    end
+
+    if select('#', ...) ~= 0 then
+        local stat
+        stat, fmt = pcall(string.format, fmt, ...)
+        if not stat then
+            error(fmt, 2)
+        end
+    end
+
+    return nil, { errno = errno, error = fmt }
+end
 
 --queue implementation
 local function queue_handler(self, fun)
@@ -282,15 +297,15 @@ local function shard(key, include_dead, use_old)
     end
     local shard = shards[1 + digest.guava(num, max_shards)]
     if shard == nil or shard[1] == nil then
-        return nil, {error = 'Shard function have returned an empty result.' ..
-                    'Please make sure that your storages are alive.'}
+        return make_error(nil, 'Shard function have returned an empty result. ' ..
+                               'Please make sure that your storages are alive.')
     end
     local res = {}
 
     -- The master node and its replicas have been located in the reverse order.
     -- It means what master is located as shard[#shard].
     -- We should reverse the order of this table, because it's more obvious
-    -- to get a mster as first element
+    -- to get a master as first element
     for i = #shard, 1, -1 do
         local server = shard[i]
         -- A node in the maintenance mode may be in the read-only state.
@@ -1080,11 +1095,11 @@ end
 local function space_call(self, space_name, server, fun, ...)
     local result = nil
     if server == nil or server.conn == nil then
-        return nil, {error = 'Connection to server was lost'}
+        return make_error(nil, 'Connection to server was lost')
     end
 
     if fun == nil or type(fun) ~= 'function' then
-        return nil, {error = 'Argument should be a function'}
+        return make_error(nil, 'Argument should be a function')
     end
 
     local status, reason = pcall(function(...)
@@ -1097,11 +1112,8 @@ local function space_call(self, space_name, server, fun, ...)
         result = fun(space_obj, ...)
     end, ...)
     if not status then
-        local err = string.format(
-            'failed to execute operation on %s: %s',
-            server.uri, reason
-        )
-        return nil, { error = err, errno = reason.code }
+        return make_error(reason.code, 'failed to execute operation on %s: %s',
+                          server.uri, reason)
     end
     return result
 end
@@ -1177,16 +1189,16 @@ local function mr_select(self, space_name, nodes, index_id, limits, key)
         end
         local buf = buffer.ibuf()
         limits.buffer = buf
-        local part, err = index_call(self, space_name, srd, 'select', index_id, key,
-                                limits)
+        local part, err = index_call(self, space_name, srd, 'select', index_id,
+                                     key, limits)
         if err then
             return nil, err
         end
         while part == nil and j >= 0 do
             j = j - 1
             srd = node[j]
-            part, err = index_call(self, space_name, srd, 'select', index_id, key,
-                              limits)
+            part, err = index_call(self, space_name, srd, 'select', index_id,
+                                   key, limits)
             if err then
                 return nil, err
             end
@@ -1238,7 +1250,7 @@ local function lookup(self, space, tuple_id, ...)
     if #q_args > 0 then
         key = q_args[1]
     else
-        return nil, 'Missing params for lookup function'
+        return make_error(nil, 'Missing params for lookup function')
     end
 
     -- try to find in new shard
@@ -1270,7 +1282,7 @@ local function lookup(self, space, tuple_id, ...)
 
     -- tuple was found let's check transfer state
     local result, err = index_call(self, '_shard', old_nodes[1], 'select', 3, key)
-    if not result then
+    if err then
         return nil, err
     end
     if #result == 0 then
@@ -1664,8 +1676,8 @@ local function truncate(self, space)
                                  master.conn.space._shard,
                                  {RSD_HANDLED})
             if not ok then
-                return nil, {error = string.fromat('Request to server: %s failed (%s)', master.uri, rv),
-                             errno = rv.code}
+                return make_error(rv.code, 'Request to server: %s failed (%s)',
+                                  master.uri, rv)
             end
             local handled_spaces = rv[2]
             if not contains(handled_spaces, space) then
@@ -1674,8 +1686,8 @@ local function truncate(self, space)
                                         master.conn.space._shard,
                                         {RSD_HANDLED, handled_spaces})
                 if not ok then
-                    return nil, {error = string.fromat('Request to server: %s failed (%s)', master.uri, err),
-                                 errno = err.code}
+                    return make_error(err.code, 'Request to server: %s failed (%s)',
+                                      master.uri, err)
                 end
             end
         end
@@ -1690,8 +1702,9 @@ local function truncate(self, space)
             if not ok then
                 err = res
             end
-            return nil, {error = string.fromat('Error occured during a truncate of the space %s on the server: %s (%s)',
-                           space, master.uri, err), errno = err.code}
+            return make_error(err.code, 'Error occured during a truncate of ' ..
+                                        'the space %s on the server: %s. (%s)',
+                              space, master.uri, err)
         end
     end
 
