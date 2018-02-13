@@ -1091,7 +1091,13 @@ local function remote_rotate(shard_id)
     return cluster_operation("rotate_shard", shard_id)
 end
 
--- base remote operation on space
+-- the function executes an function under the passed space on the remote server
+-- @space_name - name of the space in which an operation will be executed
+-- @server - server object, where server.conn is the connpool object
+-- @fun - the function which will be executed
+-- @... - this args will be passed to the function
+-- @return a result of the function, be aware that this result may be a nil,
+-- or nil, error_object
 local function space_call(self, space_name, server, fun, ...)
     local result = nil
     if server == nil or server.conn == nil then
@@ -1118,13 +1124,29 @@ local function space_call(self, space_name, server, fun, ...)
     return result
 end
 
--- primary index wrapper on space_call
+-- the function executes a tarantool operation under the passed space
+-- on the remote server
+-- @space_name - name of the space in which an operation will be executed
+-- @server - server object, where server.conn is the connpool object
+-- @operation - name of a tarantool operation, it may be select, insert, delete, etc
+-- @... - this args will be passed to the operation
+-- @return a result of the function, be aware that this result may be a nil,
+-- or nil, error_object
 local function single_call(self, space_name, server, operation, ...)
     return self:space_call(space_name, server, function(space_obj, ...)
         return space_obj[operation](space_obj, ...)
     end, ...)
 end
 
+-- the function executes a tarantool operation under the passed space and the
+-- index passed by an index number or a name on the remote server
+-- @space_name - name of the space in which an operation will be executed
+-- @server - server object, where server.conn is the connpool object
+-- @operation - name of a tarantool operation, it may be select, insert, delete, etc
+-- @index_no - name or number of the index in the passed space
+-- @... - this args will be passed to the operation
+-- @return a result of the function, be aware that this result may be a nil,
+-- or nil, error_object
 local function index_call(self, space_name, server, operation,
                           index_no, ...)
     return self:space_call(space_name, server, function(space_obj, ...)
