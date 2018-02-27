@@ -68,7 +68,6 @@ local redundancy = 3
 local REMOTE_TIMEOUT = 210
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
-local RESHARDING_RPS = 1000
 local RECONNECT_AFTER = msgpack.NULL
 
 local pool = lib_pool.new()
@@ -81,6 +80,7 @@ local RSD_FINISHED = 'FINISHED_SPACE'
 local RSD_HANDLED = 'HANDLED_SPACES'
 local RSD_STATE = 'RESHARDING'
 local RSD_FLAG = 'RESHARDING_STATE'
+local RESHARDING_RPS = 1000
 local TUPLES_PER_ITERATION = 1000
 
 local connection_fiber = {
@@ -2124,7 +2124,12 @@ local function on_connected(cfg)
 
     -- servers mappng
     shard_mapping(pool.servers)
+
+    -- configure resharding speed
     RESHARDING_RPS = cfg.rsd_max_rps or RESHARDING_RPS
+    log.verbose("Setting RESHARDING_RPS to: %d", RESHARDING_RPS)
+    TUPLES_PER_ITERATION = cfg.rsd_max_tuple_transfer or TUPLES_PER_ITERATION
+    log.verbose("Setting TUPLES_PER_ITERATION to: %d", TUPLES_PER_ITERATION)
 
     enable_operations()
     log.info('Done')
