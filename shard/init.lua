@@ -1020,7 +1020,6 @@ local function cluster_operation(func_name, ...)
     for _, shard_set in ipairs(shards) do
         for i, shard in ipairs(shard_set) do
             if shard.id ~= id then
-                -- local ok, completed, err = pcall(function()
                 if shard.conn ~= nil then
                     log.info(
                         "Trying to '%s' to shard %d in node %s",
