@@ -1036,6 +1036,17 @@ local function secondary_select(self, space_name, index_id, limits, key,
         sort_index_id)
 end
 
+-- load new schema and invalidate mergers (they hold index parts)
+local function reload_schema()
+    for _, zone in ipairs(shards) do
+        for _, node in ipairs(zone) do
+            node.conn:reload_schema()
+        end
+    end
+
+    merger = {}
+end
+
 local function direct_call(self, server, func_name, ...)
     local result = nil
     local status, reason = pcall(function(...)
@@ -1692,6 +1703,7 @@ local function enable_operations()
     shard_obj.index_call = index_call
     shard_obj.secondary_select = secondary_select
     shard_obj.mr_select = mr_select
+    shard_obj.reload_schema = reload_schema
     shard_obj.direct_call = direct_call
     shard_obj.request = request
     shard_obj.queue_request = queue_request
