@@ -1252,8 +1252,8 @@ end
 local function direct_call(self, server, func_name, ...)
     local result = nil
     local status, reason = pcall(function(...)
-        local conn = server.conn
-        result = conn[nb_call](conn, func_name, ..., {timeout = REMOTE_TIMEOUT})
+        local conn = server.conn:timeout(REMOTE_TIMEOUT)
+        result = conn[nb_call](conn, func_name, ...)
     end, ...)
     if not status then
         log.error('failed to call %s on %s: %s', func_name, server.uri, reason)
