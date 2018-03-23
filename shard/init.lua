@@ -35,7 +35,9 @@ local function merge_new(key_parts)
         if field_types[v.type] ~= nil then
             parts[part_no] = {
                 fieldno = v.fieldno - 1,
-                type = field_types[v.type]
+                type = field_types[v.type],
+                is_nullable = v.is_nullable or false,
+                collation = v.collation
             }
             part_no = part_no + 1
         else
@@ -1217,8 +1219,19 @@ local function get_merger(space_obj, index_no)
         merger[space_obj.name] = {}
     end
     if merger[space_obj.name][index_no] == nil then
-        local index = space_obj.index[index_no]
-        merger[space_obj.name][index_no] = merge_new(index.parts)
+        local parts = table.deepcopy(space_obj.index[index_no].parts)
+        -- switch collation names to collation ids
+        -- required further in merger_new
+        for _, part in ipairs(parts) do
+            if part.collation then
+                local tuple = box.space._collation.index.name:select({part.collation})
+                if tuple[1] and tuple[1][1] then
+                    part.collation = tuple[1][1]
+                end
+            end
+            part.is_nullable = true
+        end
+        merger[space_obj.name][index_no] = merge_new(parts)
     end
     return merger[space_obj.name][index_no]
 end

@@ -41,6 +41,21 @@
 #include "heap.h"
 
 #define IPROTO_DATA 0x30
+#define COLL_NONE UINT32_MAX
+
+typedef struct key_part_def {
+	/** Tuple field index for this part. */
+	uint32_t fieldno;
+	/** Type of the tuple field. */
+	enum field_type type;
+	/** Collation ID for string comparison. */
+	uint32_t coll_id;
+	/** True if a key part can store NULLs. */
+	bool is_nullable;
+} box_key_part_def_t;
+
+struct key_def *
+key_def_new_with_parts(struct key_part_def *parts, uint32_t part_count);
 
 struct source {
 	struct heap_node hnode;
@@ -214,19 +229,16 @@ lbox_merger_new(struct lua_State *L)
 {
 	if (lua_gettop(L) != 1 || lua_istable(L, 1) != 1) {
 		return luaL_error(L, "Bad params, use: new({"
-				  "{fieldno = fieldno, type = type}, ...}");
+            "{fieldno, type [, is_nullable, collation]}, ...}");
 	}
 	uint16_t count = 0, capacity = 8;
-	uint32_t *fieldno = NULL;
-	enum field_type *type = NULL;
-	fieldno = (uint32_t *)malloc(sizeof(*fieldno) * capacity);
-	if (fieldno == NULL)
-		return luaL_error(L, "Can not alloc fieldno buffer");
-	type = (enum field_type *)malloc(sizeof(*type) * capacity);
-	if (type == NULL) {
-		free(fieldno);
-		return luaL_error(L, "Can not alloc type buffer");
+
+	box_key_part_def_t *parts = NULL;
+	parts = (box_key_part_def_t *) malloc(sizeof(box_key_part_def_t) * capacity);
+	if (parts == NULL) {
+		luaL_error(L, "Can not alloc key_part_def buffer");
 	}
+
 	while (true) {
 		lua_pushinteger(L, count + 1);
 		lua_gettable(L, 1);
@@ -234,52 +246,60 @@ lbox_merger_new(struct lua_State *L)
 			break;
 		if (count == capacity) {
 			capacity *= 2;
-			uint32_t *old_fieldno = fieldno;
-			fieldno = (uint32_t *)realloc(fieldno,
-				sizeof(*fieldno) * capacity);
-			if (fieldno == NULL) {
-				free(old_fieldno);
-				free(type);
-				return luaL_error(L, "Can not alloc fieldno buffer");
-			}
-			enum field_type *old_type = type;
-			type = (enum field_type *)realloc(type,
-				sizeof(*type) * capacity);
-			if (type == NULL) {
-				free(fieldno);
-				free(old_type);
-				return luaL_error(L, "Can not alloc type buffer");
+			box_key_part_def_t *old_parts = parts;
+			parts = (box_key_part_def_t *) realloc(parts,
+				sizeof(box_key_part_def_t) * capacity);
+			if (parts == NULL) {
+				free(old_parts);
+				return luaL_error(L, "Can not realloc key_part_def buffer");
 			}
 		}
 		lua_pushstring(L, "fieldno");
 		lua_gettable(L, -2);
-		if (lua_isnil(L, -1))
-			break;
-		fieldno[count] = lua_tointeger(L, -1);
+		if (lua_isnil(L, -1)) {
+			free(parts);
+			return luaL_error(L, "Fieldno must be defined in field");
+		}
+		parts[count].fieldno = lua_tointeger(L, -1);
 		lua_pop(L, 1);
 		lua_pushstring(L, "type");
 		lua_gettable(L, -2);
-		if (lua_isnil(L, -1))
-			break;
-		type[count] = lua_tointeger(L, -1);
+		if (lua_isnil(L, -1)) {
+			free(parts);
+			return luaL_error(L, "Type must be defined in field");
+		}
+		parts[count].type = lua_tointeger(L, -1);
+		lua_pop(L, 1);
+		lua_pushstring(L, "is_nullable");
+		lua_gettable(L, -2);
+		if (lua_isnil(L, -1)) {
+			parts[count].is_nullable = false;
+		} else {
+			parts[count].is_nullable = lua_toboolean(L, -1);
+		}
+		lua_pop(L, 1);
+		lua_pushstring(L, "collation");
+		lua_gettable(L, -2);
+		if (lua_isnil(L, -1)) {
+			parts[count].coll_id = COLL_NONE;
+		} else {
+			parts[count].coll_id = lua_tointeger(L, -1);
+		}
 		lua_pop(L, 1);
 		++count;
 	}
 
 	struct merger *merger = calloc(1, sizeof(*merger));
 	if (merger == NULL) {
-		free(fieldno);
-		free(type);
+		free(parts);
 		return luaL_error(L, "Can not alloc merger");
 	}
-	merger->key_def = box_key_def_new(fieldno, type, count);
+	merger->key_def = key_def_new_with_parts(parts, count);
 	if (merger->key_def == NULL) {
-		free(fieldno);
-		free(type);
-		return luaL_error(L, "Can not alloc key_def");
+		free(parts);
+		return luaL_error(L, "Error while creating key_def");
 	}
-	free(fieldno);
-	free(type);
+	free(parts);
 
 	merger->format = box_tuple_format_new(&merger->key_def, 1);
 	if (merger->format == NULL) {
