@@ -356,7 +356,7 @@ end
 
 local server_state_methods = {
     is_connected = function(self)
-        return self.conn ~= nil and self.state == 'connected'
+        return self.state == 'connected'
     end,
     is_dead = function(self)
         return self.state == 'is_dead_disconnected'

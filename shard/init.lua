@@ -83,6 +83,10 @@ local RSD_STATE = 'RESHARDING'
 local RSD_FLAG = 'RESHARDING_STATE'
 local TUPLES_PER_ITERATION = 1000
 
+local connection_fiber = {
+    fiber = nil,
+    state = 'disconnected',
+}
 local init_complete = false
 local configuration = {}
 local shard_obj
@@ -99,18 +103,12 @@ local function is_connected()
     for j = 1, #shards do
         local srd = shards[j]
         for i = 1, redundancy do
-            if not srd[i].conn or not srd[i].conn:is_connected() then
+            if not srd[i]:is_connected() then
                 return false
             end
         end
     end
     return true
-end
-
-local function wait_connection()
-    while not is_connected() do
-        fiber.sleep(0.01)
-    end
 end
 
 --[[
@@ -163,6 +161,20 @@ local function make_error(errno, fmt, ...)
     end
 
     return nil, { errno = errno, error = fmt }
+end
+
+-- public API func that blocks invoked fiber until all shards are connected
+local function wait_for_shards_to_go_online(timeout, delay)
+    local wait_start_time = fiber.time()
+    local delay = delay or 0.1
+    local timeout = timeout or 10
+    while fiber.time() - wait_start_time < timeout do
+        if connection_fiber.state == 'connected' then
+            return true
+        end
+        fiber.sleep(delay * 2)
+    end
+    return false, "Timed out waiting for shards to go up"
 end
 
 --queue implementation
@@ -259,8 +271,6 @@ queue_mt = {
     }
 }
 
-local maintenance = {}
-
 local function reshard_works(synchronizer_enabled)
     local mode
     if synchronizer_enabled then
@@ -301,7 +311,8 @@ local function shard(key, include_dead, use_old)
     if use_old then
         max_shards = max_shards - 1
     end
-    local shard = shards[1 + digest.guava(num, max_shards)]
+    local shard_id = 1 + digest.guava(num, max_shards)
+    local shard = shards[shard_id]
     if shard == nil or shard[1] == nil then
         return make_error(nil, 'Shard function have returned an empty result. ' ..
                                'Please make sure that your storages are alive.')
@@ -323,9 +334,22 @@ local function shard(key, include_dead, use_old)
         -- it will finished with error.
         -- TODO: in future the entire cluster should be switched to the read-only
         -- mode in this case
-        if maintenance[server.id] ~= nil or pool:server_is_ok(server) or
-            include_dead then
-                table.insert(res, server)
+        if server:is_ready() or include_dead then
+                log.warn(
+                    "Shard %d has node %s in maintenance",
+                    shard_id, server.uri
+                )
+                table.insert(res, #shard, server)
+        elseif pool:server_is_ok(server) then
+            table.insert(res, server)
+        end
+    end
+
+    if #res ~= #shard then
+        log.warn("Shard %d is inconsistent state", shard_id)
+        log.warn("Consider checking it manually")
+        if #res == 0 then
+            log.error("Shard %d is offline", shard_id)
         end
     end
 
@@ -336,24 +360,23 @@ local function shard_status()
     local result = {
         online = {},
         offline = {},
-        uuids = {},
-        maintenance = maintenance
+        uuids = {}
     }
     for _, shard_set in ipairs(shards) do
-         for _, shard in ipairs(shard_set) do
-             local s = { uri = shard.uri, id = shard.id }
-             if shard.conn and shard.conn:is_connected() then
-                 table.insert(result.online, s)
-                 local ok, info = pcall(shard.conn.call, shard.conn, 'box.info')
-                 if not ok then
-                     table.insert(result.offline, s)
-                 else
-                     result.uuids[info.uuid] = s.uri
-                 end
-             else
-                 table.insert(result.offline, s)
-             end
-         end
+        for _, shard in ipairs(shard_set) do
+            local s = { uri = shard.uri, id = shard.id }
+            if shard:is_connected() then
+                local ok, info = pcall(shard.conn.call, shard.conn, 'box.info')
+                if not ok then
+                    log.error(info)
+                else
+                    table.insert(result.online, s)
+                    result.uuids[info.uuid] = s.uri
+                end
+            else
+                table.insert(result.offline, s)
+            end
+        end
     end
     return result
 end
@@ -566,7 +589,10 @@ end
 
 local function transfer_worker(self)
     fiber.name('_transfer_worker')
-    wait_connection()
+    if not wait_for_shards_to_go_online() then
+        log.error("Transfer worker: failed waiting for shards to go up")
+        return nil
+    end
     while true do
         if reshard_works() then
             local cur_space = box.space._shard:get(RSD_CURRENT)
@@ -665,7 +691,10 @@ local function get_next_space(sh_state, cur_space)
 end
 
 local function rsd_warmup(self)
-    wait_connection()
+    if not wait_for_shards_to_go_online() then
+        log.error("Resharding warmup: failed waiting for shards to go up")
+        return nil
+    end
     local cur_space = box.space._shard:get(RSD_CURRENT)[2]
     local space = box.space[cur_space]
     local worker_name = '_shard_worker'
@@ -762,10 +791,13 @@ _G.remote_resharding_state = function()
             local res = { uri = shard.uri }
             local ok, err = pcall(function()
                 local conn = shard.conn
+                if not conn then
+                    error("Server is unavailable")
+                end
                 res.data = conn[nb_call](conn, 'resharding_status')
             end)
             if not ok then
-                log.error("operation resharding_status failed on node: %s with: %s",
+                log.debug("operation resharding_status failed on node: %s with: %s",
                           res.uri, err)
             end
             table.insert(result, res)
@@ -915,12 +947,9 @@ end
 
 local function shard_connect(s_obj)
     -- check if connection exists
-    if s_obj.conn ~= nil and s_obj.conn:is_connected() then
-        if maintenance[s_obj.id] ~= nil then
-            maintenance[s_obj.id] = nil
-            log.info("Return '%s' from maintenance", s_obj.uri)
-        end
-        log.info("Server '%s' has been online", s_obj.uri)
+    if s_obj:is_ready() then
+        s_obj.state = 'connected'
+        log.info("Return '%s' from maintenance", s_obj.uri)
         return true
     end
     -- try to join replica
@@ -939,8 +968,7 @@ local function shard_connect(s_obj)
         return false, msg
     end
     s_obj.conn = conn
-    -- remove from maintenance table
-    maintenance[s_obj.id] = nil
+    s_obj.state = 'connected'
     log.info("Succesfully joined shard %d with url '%s'", s_obj.id, s_obj.uri)
     return true
 end
@@ -975,13 +1003,7 @@ local function join_shard(id)
     for j, shard_set in ipairs(shards) do
         for i, shard in ipairs(shard_set) do
             if shard.id == id then
-                -- swap RO/RW shards
-                local to_join = shard
-                to_join.ignore = true
-                shard_swap(j, i)
-                to_join.ignore = false
-                -- try to join replica
-                return shard_connect(to_join)
+                return shard_connect(shard)
             end
         end
     end
@@ -991,7 +1013,13 @@ end
 local function unjoin_shard(id)
     -- In maintenance mode shard is available
     -- but client will recive erorrs using this shard
-    maintenance[id] = true
+    for _, replica_set in ipairs(shards) do
+        for _, srv in ipairs(replica_set) do
+            if srv.id == id then
+                srv.state = 'is_dead_connected'
+            end
+        end
+    end
     return true
 end
 
@@ -1257,8 +1285,8 @@ local function direct_call(self, server, func_name, ...)
     end, ...)
     if not status then
         log.error('failed to call %s on %s: %s', func_name, server.uri, reason)
-        if not server.conn:is_connected() then
-            log.error("server %s is offline", server.uri)
+        if not server:is_connected() then
+            log.error("server %s is unavailable", server.uri)
         end
     end
     return result
@@ -1590,7 +1618,7 @@ end
 local function check_operation(self, space, operation_id, tuple_id)
     local delay = 0.001
     operation_id = tostring(operation_id)
-    for i=1,100 do
+    for i = 1, 100 do
         local failed = nil
         local task_status = nil
         for _, server in pairs(shard(tuple_id)) do
@@ -2073,19 +2101,7 @@ local function enable_operations()
     })
 end
 
--- init shard, connect with servers
-local function init(cfg, callback)
-    init_create_spaces(cfg)
-    log.info('Sharding initialization started...')
-    -- set constants
-    pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
-    pool.HEARTBEAT_TIMEOUT = shard_obj.HEARTBEAT_TIMEOUT
-    pool.DEAD_TIMEOUT = shard_obj.DEAD_TIMEOUT
-    pool.RECONNECT_AFTER = shard_obj.RECONNECT_AFTER
-
-    --init connection pool
-    pool:init(cfg)
-
+local function on_connected(cfg)
     redundancy = cfg.redundancy or pool:len()
     if redundancy > pool.zones_n then
         log.error("the number of zones (%d) must be greater than %d",
@@ -2101,6 +2117,33 @@ local function init(cfg, callback)
     enable_operations()
     log.info('Done')
     init_complete = true
+    return true
+end
+
+-- background fiber function that signals when all shards are connected
+local function establish_connections_in_pool()
+    pool:wait_connection()
+    on_connected(configuration)
+    if configuration.monitor == true then
+        pool:start_monitoring()
+    end
+    connection_fiber.state = 'connected'
+    return true
+end
+
+-- init shard, connect with servers
+local function init(cfg, callback)
+    init_create_spaces(cfg)
+    log.info('Sharding initialization started...')
+
+    pool.REMOTE_TIMEOUT = shard_obj.REMOTE_TIMEOUT
+    pool.HEARTBEAT_TIMEOUT = shard_obj.HEARTBEAT_TIMEOUT
+    pool.DEAD_TIMEOUT = shard_obj.DEAD_TIMEOUT
+    pool.RECONNECT_AFTER = shard_obj.RECONNECT_AFTER
+
+    pool:init(cfg)
+    connection_fiber.fiber = fiber.create(establish_connections_in_pool)
+
     return true
 end
 
@@ -2146,7 +2189,6 @@ _G.transfer_wait     = transfer_wait
 _G.cluster_operation = cluster_operation
 _G.execute_operation = execute_operation
 _G.force_transfer    = force_transfer
-_G.get_zones         = get_zones
 _G.merge_sort        = merge_sort
 _G.shard_status      = shard_status
 _G.get_server_list   = get_server_list
@@ -2170,26 +2212,26 @@ operations on each node. Resharding workers must be created on new master and
 cancelled on the previous one.
 ]]--
 local function enable_resharding(self)
-    self.resharding_worker = fiber.create(resharding_worker, self)
-    self.transfer_worker = fiber.create(transfer_worker, self)
+    self.resharding_worker_fiber = fiber.create(resharding_worker, self)
+    self.transfer_worker_fiber = fiber.create(transfer_worker, self)
     log.info('Enabled resharding workers')
 end
 
 local function disable_resharding(self)
-    if (get_fiber_id(self.resharding_worker) ~= 0) then
-        self.resharding_worker:cancel()
-        while self.resharding_worker:status() ~= 'dead' do
+    if (get_fiber_id(self.resharding_worker_fiber) ~= 0) then
+        self.resharding_worker_fiber:cancel()
+        while self.resharding_worker_fiber:status() ~= 'dead' do
             fiber.sleep(0.01)
         end
-        self.resharding_worker = nil
+        self.resharding_worker_fiber = msgpack.NULL
         log.info('Disabled resharding worker')
     end
-    if (get_fiber_id(self.transfer_worker) ~= 0) then
-        self.transfer_worker:cancel()
-        while self.transfer_worker:status() ~= 'dead' do
+    if (get_fiber_id(self.transfer_worker_fiber) ~= 0) then
+        self.transfer_worker_fiber:cancel()
+        while self.transfer_worker_fiber:status() ~= 'dead' do
             fiber.sleep(0.01)
         end
-        self.transfer_worker = nil
+        self.transfer_worker_fiber = msgpack.NULL
         log.info('Disabled transfer worker')
     end
 end
@@ -2203,9 +2245,10 @@ shard_obj = {
     shards = shards,
     shards_n = shards_n,
     len = len,
+    get_zones = get_zones,
     redundancy = redundancy,
     is_connected = is_connected,
-    wait_connection = wait_connection,
+    wait_for_shards_to_go_online = wait_for_shards_to_go_online,
     wait_operations = wait_operations,
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
