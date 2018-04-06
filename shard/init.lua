@@ -21,7 +21,7 @@ local field_types = {
     array     = 3,
     number    = 4,
     integer   = 5,
-    scala     = 5
+    scalar    = 6
 }
 
 local merger = {}
