@@ -480,8 +480,8 @@ end
 local function wait_connection(self)
     while true do
         local all_connected = true
-        for _, zone in ipairs(self.servers) do
-            for _, srv in ipairs(zone) do
+        for _, zone in pairs(self.servers) do
+            for _, srv in ipairs(zone.list) do
                 if not srv:is_connected() then
                     all_connected = false
                 end

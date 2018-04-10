@@ -2277,6 +2277,8 @@ shard_obj = {
     pool = pool,
     init_synchronizer = init_synchronizer,
     check_shard = check_shard,
+    resharding_worker_fiber = msgpack.NULL, -- initial value
+    transfer_worker_fiber = msgpack.NULL, -- initial value
     enable_resharding = enable_resharding,
     disable_resharding = disable_resharding
 }
