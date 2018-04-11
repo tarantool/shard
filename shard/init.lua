@@ -2197,8 +2197,6 @@ _G.remote_append     = remote_append
 _G.remote_join       = remote_join
 _G.remote_unjoin     = remote_unjoin
 _G.remote_rotate     = remote_rotate
-_G.drop_space        = drop_space
-_G.drop_index        = drop_index
 
 _G.find_operation    = find_operation
 _G.transfer_wait     = transfer_wait
@@ -2214,10 +2212,10 @@ _G.synchronize_shards_object = synchronize_shards_object
 _G.start_resharding  = start_resharding
 
 -- get fiber id function
-local function get_fiber_id(fiber)
+local function get_fiber_id(fiber_obj)
     local fid = 0
-    if fiber ~= nil and fiber:status() ~= "dead" then
-        fid = fiber:id()
+    if fiber_obj ~= nil and fiber_obj:status() ~= "dead" then
+        fid = fiber_obj:id()
     end
     return fid
 end
