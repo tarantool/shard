@@ -83,11 +83,13 @@ local RSD_STATE = 'RESHARDING'
 local RSD_FLAG = 'RESHARDING_STATE'
 local RESHARDING_RPS = 1000
 local TUPLES_PER_ITERATION = 1000
+local SELECT_LIMIT_DEFAULT = 1000
 
 local connection_fiber = {
     fiber = nil,
     state = 'disconnected',
 }
+
 local init_complete = false
 local configuration = {}
 local shard_obj
@@ -1227,7 +1229,7 @@ local function mr_select(self, space_name, nodes, index_id, limits, key,
     local sort_index_id = sort_index_id or index_id
     local merge_obj = nil
     limits       = limits       or {}
-    limits.limit = limits.limit or 1000
+    limits.limit = limits.limit or SELECT_LIMIT_DEFAULT
     for _, node in pairs(nodes) do
         local j = #node
         local srd = node[j]
@@ -1423,15 +1425,26 @@ local function request(self, space, operation, tuple_id, ...)
     return single_call(self, space, nodes[1], operation, ...)
 end
 
+local function get_index_by_id(server, space_id, index_id)
+    local conn = server.conn
+    local space_obj = conn:timeout(REMOTE_TIMEOUT).space[space_id]
+    if space_obj == nil then
+        conn:reload_schema()
+        space_obj = conn.space[space_id]
+    end
+    return space_obj.index[index_id]
+end
+
 local function broadcast_select(task)
-    local conn = task.server.conn
-    local index = conn:timeout(REMOTE_TIMEOUT).space[task.space].index[task.index]
-    local key = task.args[1]
-    local offset =  task.args[2]
-    local limit = task.args[3]
-    local tuples = index:select(key, { offset = offset, limit = limit, timeout = REMOTE_TIMEOUT})
-    for _, v in ipairs(tuples) do
-        table.insert(task.result, v)
+    local index = get_index_by_id(task.server, task.space_id, task.index_id)
+    local args = table.copy(task.args)
+    args.buffer = task.buffer
+    local status, result, err = pcall(index.select, index, task.key, args)
+    if not status or result == nil then
+        local err = string.format(
+            'failed to execute operation on %s: %s',
+            server.uri, result or json.encode(err))
+        error(err)
     end
 end
 
@@ -1449,39 +1462,53 @@ local function find_server_in_shard(shard, hint)
     return nil
 end
 
-local function q_select(self, space, index, args)
-    local sk = box.space[space].index[index]
-    local pk = box.space[space].index[0]
-    if sk == pk or sk.parts[1].fieldno == pk.parts[1].fieldno then
-        local key = args[1]
-        if type(key) == 'table' then
-            key = key[1]
-        end
-        local offset = args[2]
-        local limit = args[3]
-        local srv = shard(key)[1]
-        local i = srv.conn.space[space].index[index]
-        log.info('%s.space.%s.index.%s:select{%s, {offset = %s, limit = %s}',
-            srv.uri, space, index, json.encode(key), offset, limit)
-        local tuples = i:select(key, { offset = offset, limit = limit, timeout = REMOTE_TIMEOUT })
-        if tuples == nil then
-            tuples = {}
-        end
-        return tuples
-    else
-        log.info("%s.%s.id = %d",
-            space, index, box.space[space].index[index].id)
-    end
+local function q_select(self, space_id, index_id, key, args)
     local zone = math.floor(math.random() * redundancy) + 1
-    local tuples = {}
-        local q = queue(broadcast_select, shards_n)
+    --[[
+    -- check whether the index is primary
+    local srv = find_server_in_shard(shards[1], zone)
+    local index = get_index_by_id(srv, space_id, index_id)
+    local key = type(key) == 'table' and key or {key}
+    local is_full_primary = index.id == 0 and #index.parts == #key
+    -- XXX: use select by a primary key when possible
+    ]]--
+
+    -- handle secondary index case: make requests to all storages of a zone in
+    -- parallel, wait for all, then merge results
+    local q = queue(broadcast_select, shards_n)
+    local merge_obj = nil
+    local results = {}
     for i = 1, shards_n do
         local srv = find_server_in_shard(shards[i], zone)
-        local task = {server = srv, space = space, index = index,
-                      args = args, result = tuples }
+        if merge_obj == nil then
+            local sort_index_id = args.sort_index_id or index_id
+            merge_obj = get_merger(srv.conn.space[space_id], sort_index_id)
+        end
+        local buf = buffer.ibuf()
+        table.insert(results, buf)
+        local task = {
+            server = srv,
+            space_id = space_id,
+            index_id = index_id,
+            key = key,
+            args = args,
+            buffer = buf,
+        }
         q:put(task)
     end
     q:join()
+
+    -- merge results from storages
+    local limit = args.limit or SELECT_LIMIT_DEFAULT
+    merge_obj.start(results, 1)
+    local tuples = {}
+    while #tuples < limit do
+        local tuple = merge_obj.next()
+        if tuple == nil then
+            break
+        end
+        table.insert(tuples, tuple)
+    end
     return tuples
 end
 
