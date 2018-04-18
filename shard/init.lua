@@ -69,6 +69,7 @@ local REMOTE_TIMEOUT = 210
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = msgpack.NULL
+local TIMEOUT_INFINITY = 18446744073709551615ULL
 
 local pool = lib_pool.new()
 local STATE_NEW = 0
@@ -175,6 +176,17 @@ local function wait_for_shards_to_go_online(timeout, delay)
         fiber.sleep(delay * 2)
     end
     return false, "Timed out waiting for shards to go up"
+end
+
+-- shard-1.2 compatibility wrapper
+local function wait_connection()
+    local timeout = TIMEOUT_INFINITY
+    local delay = 0.005
+    local ok, err = wait_for_shards_to_go_online(timeout, delay)
+    assert(ok, err)
+    while not is_connected() do
+        fiber.sleep(delay * 2)
+    end
 end
 
 --queue implementation
@@ -2267,6 +2279,7 @@ shard_obj = {
     redundancy = redundancy,
     is_connected = is_connected,
     wait_for_shards_to_go_online = wait_for_shards_to_go_online,
+    wait_connection = wait_connection, -- shard-1.2 compatibility
     wait_operations = wait_operations,
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
