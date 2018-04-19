@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 2.1 (unstable)
+
+Improved compatibility with shard-1.2 (consider PR #67 for details):
+
+* Fixed undefined variables references to work under strict mode / debug
+  tarantool build.
+* Fixed a bug in connpool.wait_connection().
+* Brought back shard.wait_connection() function.
+* Brought back mr_select's sort_index_id parameter.
+
 ## Version 2.0 (unstable)
 
 This version is not compatible with previous ones.
