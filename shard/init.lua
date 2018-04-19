@@ -69,6 +69,7 @@ local REMOTE_TIMEOUT = 210
 local HEARTBEAT_TIMEOUT = 500
 local DEAD_TIMEOUT = 10
 local RECONNECT_AFTER = msgpack.NULL
+local TIMEOUT_INFINITY = 18446744073709551615ULL
 
 local pool = lib_pool.new()
 local STATE_NEW = 0
@@ -175,6 +176,17 @@ local function wait_for_shards_to_go_online(timeout, delay)
         fiber.sleep(delay * 2)
     end
     return false, "Timed out waiting for shards to go up"
+end
+
+-- shard-1.2 compatibility wrapper
+local function wait_connection()
+    local timeout = TIMEOUT_INFINITY
+    local delay = 0.005
+    local ok, err = wait_for_shards_to_go_online(timeout, delay)
+    assert(ok, err)
+    while not is_connected() do
+        fiber.sleep(delay * 2)
+    end
 end
 
 --queue implementation
@@ -1231,7 +1243,8 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(self, space_name, nodes, index_id, limits, key)
+local function mr_select(self, space_name, nodes, index_id, limits, key,
+        sort_index_id)
     local results = {}
     local sort_index_id = sort_index_id or index_id
     local merge_obj = nil
@@ -1241,7 +1254,7 @@ local function mr_select(self, space_name, nodes, index_id, limits, key)
         local j = #node
         local srd = node[j]
         if merge_obj == nil then
-            merge_obj = get_merger(srd.conn.space[space_name], index_id)
+            merge_obj = get_merger(srd.conn.space[space_name], sort_index_id)
         end
         local buf = buffer.ibuf()
         limits.buffer = buf
@@ -1273,8 +1286,10 @@ local function mr_select(self, space_name, nodes, index_id, limits, key)
     return tuples
 end
 
-local function secondary_select(self, space_name, index_id, limits, key)
-    return mr_select(self, space_name, shards, index_id, limits, key)
+local function secondary_select(self, space_name, index_id, limits, key,
+        sort_index_id)
+    return mr_select(self, space_name, shards, index_id, limits, key,
+        sort_index_id)
 end
 
 -- load new schema and invalidate mergers (they hold index parts)
@@ -2197,8 +2212,6 @@ _G.remote_append     = remote_append
 _G.remote_join       = remote_join
 _G.remote_unjoin     = remote_unjoin
 _G.remote_rotate     = remote_rotate
-_G.drop_space        = drop_space
-_G.drop_index        = drop_index
 
 _G.find_operation    = find_operation
 _G.transfer_wait     = transfer_wait
@@ -2214,10 +2227,10 @@ _G.synchronize_shards_object = synchronize_shards_object
 _G.start_resharding  = start_resharding
 
 -- get fiber id function
-local function get_fiber_id(fiber)
+local function get_fiber_id(fiber_obj)
     local fid = 0
-    if fiber ~= nil and fiber:status() ~= "dead" then
-        fid = fiber:id()
+    if fiber_obj ~= nil and fiber_obj:status() ~= "dead" then
+        fid = fiber_obj:id()
     end
     return fid
 end
@@ -2266,6 +2279,7 @@ shard_obj = {
     redundancy = redundancy,
     is_connected = is_connected,
     wait_for_shards_to_go_online = wait_for_shards_to_go_online,
+    wait_connection = wait_connection, -- shard-1.2 compatibility
     wait_operations = wait_operations,
     get_epoch = get_epoch,
     wait_epoch = wait_epoch,
@@ -2277,6 +2291,8 @@ shard_obj = {
     pool = pool,
     init_synchronizer = init_synchronizer,
     check_shard = check_shard,
+    resharding_worker_fiber = msgpack.NULL, -- initial value
+    transfer_worker_fiber = msgpack.NULL, -- initial value
     enable_resharding = enable_resharding,
     disable_resharding = disable_resharding
 }
