@@ -1442,7 +1442,14 @@ local function request(self, space, operation, tuple_id, ...)
         return nil, err
     end
 
-    return single_call(self, space, nodes[1], operation, ...)
+    local result = {}
+    for _, server in ipairs(nodes) do
+        table.insert(result, single_call(self, space, server, operation, ...))
+        if configuration.replication == true then
+            break
+        end
+    end
+    return result
 end
 
 local function broadcast_select(task)
