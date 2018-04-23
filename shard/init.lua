@@ -1223,13 +1223,19 @@ local function get_merger(space_obj, index_no)
     return merger[space_obj.name][index_no]
 end
 
-local function mr_select(self, space_name, nodes, index_id, limits, key,
+local function is_future(result)
+    return type(result) == 'table' and type(result.wait_result) == 'function'
+end
+
+local function mr_select(self, space_name, nodes, index_id, opts, key,
         sort_index_id)
     local results = {}
     local sort_index_id = sort_index_id or index_id
     local merge_obj = nil
-    limits       = limits       or {}
-    limits.limit = limits.limit or SELECT_LIMIT_DEFAULT
+    opts       = opts       or {}
+    opts.limit = opts.limit or SELECT_LIMIT_DEFAULT
+    opts.is_async = true
+    local futures = {}
     for _, node in pairs(nodes) do
         local j = #node
         local srd = node[j]
@@ -1237,26 +1243,36 @@ local function mr_select(self, space_name, nodes, index_id, limits, key,
             merge_obj = get_merger(srd.conn.space[space_name], sort_index_id)
         end
         local buf = buffer.ibuf()
-        limits.buffer = buf
-        local part, err = index_call(self, space_name, srd, 'select', index_id,
-                                     key, limits)
+        opts.buffer = buf
+        local future, err = index_call(self, space_name, srd, 'select',
+                                       index_id, key, opts)
         if err then
             return nil, err
         end
-        while part == nil and j >= 0 do
+        while future == nil and j >= 0 do
             j = j - 1
             srd = node[j]
-            part, err = index_call(self, space_name, srd, 'select', index_id,
-                                   key, limits)
+            future, err = index_call(self, space_name, srd, 'select', index_id,
+                                     key, opts)
             if err then
                 return nil, err
             end
         end
+        table.insert(futures, future)
         table.insert(results, buf)
     end
+
+    -- wait for all requests to be done
+    for i = 1, #futures do
+        if is_future(futures[i]) then
+            local _, err = futures[i]:wait_result(5 * REMOTE_TIMEOUT)
+            if err then return nil, err end
+        end
+    end
+
     merge_obj.start(results, 1)
     local tuples = {}
-    while #tuples < limits.limit do
+    while #tuples < opts.limit do
         local tuple = merge_obj.next()
         if tuple == nil then
             break
@@ -1266,9 +1282,9 @@ local function mr_select(self, space_name, nodes, index_id, limits, key,
     return tuples
 end
 
-local function secondary_select(self, space_name, index_id, limits, key,
+local function secondary_select(self, space_name, index_id, opts, key,
         sort_index_id)
-    return mr_select(self, space_name, shards, index_id, limits, key,
+    return mr_select(self, space_name, shards, index_id, opts, key,
         sort_index_id)
 end
 
