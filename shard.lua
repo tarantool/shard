@@ -995,7 +995,7 @@ local function space_call(self, space_name, server, fun, ...)
         )
         log.error(err)
         result = {status=false, error=err}
-        if not server.conn:is_connected() then
+        if server.conn == nil or not server.conn:is_connected() then
             log.error("server %s is offline", server.uri)
         end
     end
