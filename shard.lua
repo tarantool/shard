@@ -135,43 +135,19 @@ local function queue_handler(self, fun)
 end
 
 
-local queue_list = {}
-
 local queue_mt
-local function create_queue(fun, workers)
+local function queue(fun, workers)
     -- Start fiber queue to processes transactions in parallel
     local channel_size = math.min(workers, redundancy)
     local ch = fiber.channel(workers)
     local chj = fiber.channel(workers)
     local self = setmetatable({
-        ch = ch, chj = chj, workers = workers, fun = fun
+        ch = ch, chj = chj, workers = workers,
     }, queue_mt)
     for i=1,workers do
         fiber.create(queue_handler, self, fun)
     end
     return self
-end
-
-local function free_queue(q)
-    local list = queue_list[q.fun]
-    list.n = list.n + 1
-    list[list.n] = q
-end
-
-local function queue(fun, workers)
-    if queue_list[fun] == nil then
-        queue_list[fun] = { n = 0 }
-    end
-    local list = queue_list[fun]
-    local len = list.n
-
-    if len > 0 then
-        local result = list[len]
-        list[len] = nil
-        list.n = list.n - 1
-        return result
-    end
-    return create_queue(fun, workers)
 end
 
 local function queue_join(self)
@@ -180,15 +156,17 @@ local function queue_join(self)
     while self.ch:is_closed() ~= true and self.ch:is_empty() ~= true do
         fiber.sleep(0)
     end
+    self.ch:close()
 
-    while self.chj:is_empty() ~= true do
+    -- wait until fibers stop
+    for i = 1, self.workers do
         self.chj:get()
     end
     log.debug("queue.join(%s): done", self)
+
     if self.error then
         return error(self.error) -- re-throw error
     end
-    free_queue(self)
 end
 
 local function queue_put(self, arg)
