@@ -18,12 +18,13 @@ env:
       - TARGET=test
       - OS=el DIST=6
       - OS=el DIST=7
-      - OS=fedora DIST=24
-      - OS=fedora DIST=25
-      - OS=ubuntu DIST=precise
+      - OS=fedora DIST=26
+      - OS=fedora DIST=27
       - OS=ubuntu DIST=trusty
       - OS=ubuntu DIST=xenial
-      - OS=ubuntu DIST=yakkety
+      - OS=ubuntu DIST=artful
+#      currently disabled, see https://github.com/tarantool/shard/issues/77
+#      - OS=ubuntu DIST=bionic
       - OS=debian DIST=wheezy
       - OS=debian DIST=jessie
       - OS=debian DIST=stretch
@@ -55,13 +56,33 @@ deploy:
       condition: -n "${OS}" && -n "${DIST}" && -n "${PACKAGECLOUD_TOKEN}"
   - provider: packagecloud
     username: tarantool
-    repository: "1_8"
+    repository: "1_9"
     token: ${PACKAGECLOUD_TOKEN}
     dist: ${OS}/${DIST}
     package_glob: build/*.{rpm,deb}
     skip_cleanup: true
     on:
-      branch: 1.7
+      branch: master
+      condition: -n "${OS}" && -n "${DIST}" && -n "${PACKAGECLOUD_TOKEN}"
+  - provider: packagecloud
+    username: tarantool
+    repository: "1_10"
+    token: ${PACKAGECLOUD_TOKEN}
+    dist: ${OS}/${DIST}
+    package_glob: build/*.{rpm,deb}
+    skip_cleanup: true
+    on:
+      branch: master
+      condition: -n "${OS}" && -n "${DIST}" && -n "${PACKAGECLOUD_TOKEN}"
+  - provider: packagecloud
+    username: tarantool
+    repository: "2_0"
+    token: ${PACKAGECLOUD_TOKEN}
+    dist: ${OS}/${DIST}
+    package_glob: build/*.{rpm,deb}
+    skip_cleanup: true
+    on:
+      branch: master
       condition: -n "${OS}" && -n "${DIST}" && -n "${PACKAGECLOUD_TOKEN}"
 
 notifications:
