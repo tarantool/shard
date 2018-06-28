@@ -326,7 +326,7 @@ local function shard(key, include_dead, use_old)
         -- it will finished with error.
         -- TODO: in future the entire cluster should be switched to the read-only
         -- mode in this case
-        if server:is_ready() or include_dead then
+        if server:is_ready() and include_dead then
                 log.warn(
                     "Shard %d has node %s in maintenance",
                     shard_id, server.uri
@@ -404,7 +404,7 @@ end
 
 local function process_tuple(space, tuple, worker, lookup)
     local shard_id = tuple[space.index[0].parts[1].fieldno]
-    local old_sh = shard(shard_id, true)[1]
+    local old_sh = shard(shard_id, false, true)[1]
     local new_sh = shard(shard_id)[1]
     if new_sh.id == old_sh.id then
         return false
