@@ -397,11 +397,12 @@ local function connect(self, id, server)
         local conn = remote:new(uri, { reconnect_after = self.RECONNECT_AFTER })
         if conn:ping() and conn.state == 'active' then
             srv.conn = conn
-            if conn:eval("return box.info.server.uuid") == box.info.server.uuid then
+            local ok, uuid = pcall(conn.eval, conn, "return box.info.server.uuid")
+            if ok and uuid == box.info.server.uuid then
                 log.info("setting self_server to " .. server.uri)
                 self.self_server = srv
             end
-            break
+            if ok then break end
         end
         conn:close()
         self:on_connection_failure(srv)
