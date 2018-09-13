@@ -1,5 +1,17 @@
 # Changelog
 
+## Version 2.2 (unstable)
+
+This release contains bunch of bugfixes, revives q_select and allows
+secondary_select requests be fired in parallel.
+
+* q_select: revive and use C merger;
+* CI/CD fixes (#75);
+* resharding: fix a bug when tuples were not moved to another shard (#79);
+* bootstrapping: keep attemting to connect after access denied (guard UUID
+  request);
+* secondary_select: make requests in parallel on tarantool-1.10+.
+
 ## Version 2.1 (unstable)
 
 Improved compatibility with shard-1.2 (consider PR #67 for details):
