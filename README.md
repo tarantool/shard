@@ -1,3 +1,7 @@
+# DEPRECATED
+
+### Please note, this project is deprecated and no longer being maintained, please use [vshard](https://github.com/tarantool/vshard).
+
 # Tarantool sharding module
 [![Tests status](https://travis-ci.org/tarantool/shard.svg?branch=master)](https://travis-ci.org/tarantool/shard)
 
